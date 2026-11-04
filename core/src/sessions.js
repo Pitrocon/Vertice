@@ -25,7 +25,11 @@ export function startSession({ agentId, command, args = [], cwd, onEvent }) {
   let mode
 
   if (pty) {
-    proc = pty.spawn(command, args, {
+    // node-pty (CreateProcess) não executa .cmd/.bat diretamente — embrulhar via cmd.exe
+    const isBatch = /\.(cmd|bat)$/i.test(command)
+    const spawnCmd = isBatch ? 'cmd.exe' : command
+    const spawnArgs = isBatch ? ['/c', command, ...args] : args
+    proc = pty.spawn(spawnCmd, spawnArgs, {
       name: 'xterm-color',
       cols: 120,
       rows: 30,

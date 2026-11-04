@@ -1,16 +1,17 @@
 import { execFile } from 'node:child_process'
 
 // Catálogo de runtimes suportados. Cada entrada descreve como detectar,
-// versionar e iniciar uma sessão interativa da CLI.
+// versionar, instalar e iniciar uma sessão interativa da CLI.
 export const RUNTIME_CATALOG = [
-  { id: 'claude',   name: 'Claude Code', kind: 'CLI de IA',   command: 'claude',   versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @anthropic-ai/claude-code' },
-  { id: 'codex',    name: 'Codex CLI',   kind: 'CLI de IA',   command: 'codex',    versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @openai/codex' },
-  { id: 'kimi',     name: 'Kimi CLI',    kind: 'CLI de IA',   command: 'kimi',     versionArgs: ['--version'], sessionArgs: [], install: null },
-  { id: 'glm',      name: 'GLM CLI',     kind: 'CLI de IA',   command: 'glm',      versionArgs: ['--version'], sessionArgs: [], install: null },
-  { id: 'opencode', name: 'OpenCode',    kind: 'CLI de IA',   command: 'opencode', versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g opencode-ai' },
-  { id: 'ollama',   name: 'Ollama',      kind: 'Modelo local', command: 'ollama',  versionArgs: ['--version'], sessionArgs: [], http: 'http://localhost:11434/api/tags', install: 'winget install Ollama.Ollama' },
-  { id: 'lmstudio', name: 'LM Studio',   kind: 'Modelo local', command: 'lms',     versionArgs: ['version'],   sessionArgs: [], http: 'http://localhost:1234/v1/models', install: null },
-  { id: 'powershell', name: 'PowerShell', kind: 'Shell',       command: 'powershell', versionArgs: ['--version'], sessionArgs: ['-NoLogo'], install: null },
+  { id: 'claude',      name: 'Claude Code',     kind: 'CLI de IA',    command: 'claude',     versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @anthropic-ai/claude-code' },
+  { id: 'codex',       name: 'Codex CLI',       kind: 'CLI de IA',    command: 'codex',      versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @openai/codex' },
+  { id: 'kimi',        name: 'Kimi CLI',        kind: 'CLI de IA',    command: 'kimi',       versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @moonshot-ai/kimi-code' },
+  { id: 'glm',         name: 'GLM CLI (Z.ai)',  kind: 'CLI de IA',    command: 'zai',        versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @guizmo-ai/zai-cli' },
+  { id: 'antigravity', name: 'Antigravity CLI', kind: 'CLI de IA',    command: 'agy',        versionArgs: ['--version'], sessionArgs: [], install: 'irm https://antigravity.google/cli/install.ps1 | iex' },
+  { id: 'opencode',    name: 'OpenCode',        kind: 'CLI de IA',    command: 'opencode',   versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g opencode-ai' },
+  { id: 'ollama',      name: 'Ollama',          kind: 'Modelo local', command: 'ollama',     versionArgs: ['--version'], sessionArgs: [], http: 'http://localhost:11434/api/tags', install: 'winget install Ollama.Ollama' },
+  { id: 'lmstudio',    name: 'LM Studio',       kind: 'Modelo local', command: 'lms',        versionArgs: ['version'],   sessionArgs: [], http: 'http://localhost:1234/v1/models', install: null },
+  { id: 'powershell',  name: 'PowerShell',      kind: 'Shell',        command: 'powershell', versionArgs: ['--version'], sessionArgs: ['-NoLogo'], install: null },
 ]
 
 function run(cmd, args, timeoutMs = 6000) {
@@ -26,10 +27,6 @@ async function where(command) {
   const out = await run('where', [command])
   if (!out) return null
   return out.split('\n')[0].trim() || null
-}
-
-export async function resolveCommand(command) {
-  return (await where(command)) ?? command
 }
 
 async function httpCheck(url, timeoutMs = 2500) {
@@ -63,4 +60,14 @@ export async function detectRuntimes() {
     return { ...runtime, status: 'installed', version, path }
   }))
   return results
+}
+
+// Resolve o caminho executável real. `where` pode retornar shims sem extensão
+// (ex.: scripts bash do npm) — o Windows precisa de .exe/.cmd/.bat.
+export async function resolveCommand(command) {
+  const out = await run('where', [command])
+  if (!out) return command
+  const candidates = out.split('\n').map((line) => line.trim()).filter(Boolean)
+  const executable = candidates.find((candidate) => /\.(exe|cmd|bat)$/i.test(candidate))
+  return executable ?? candidates[0]
 }

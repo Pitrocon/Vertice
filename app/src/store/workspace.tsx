@@ -347,7 +347,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, [cliRuntimes])
 
   const RUNTIME_NAME_TO_ID: Record<string, string> = {
-    'Claude Code': 'claude', 'Codex CLI': 'codex', 'Kimi CLI': 'kimi', 'GLM CLI': 'glm',
+    'Claude Code': 'claude', 'Codex CLI': 'codex', 'Kimi CLI': 'kimi', 'GLM CLI': 'glm', 'GLM CLI (Z.ai)': 'glm', 'Antigravity CLI': 'antigravity',
     OpenCode: 'opencode', Ollama: 'ollama', 'LM Studio': 'lmstudio', PowerShell: 'powershell',
   }
 

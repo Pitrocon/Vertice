@@ -80,11 +80,12 @@ export const initialProjects: Project[] = [
 ]
 
 export const initialCliRuntimes: CliRuntime[] = [
-  { id: 'claude', name: 'Claude Code', kind: 'CLI de IA', command: 'claude', version: '2.1.4', status: 'installed', approved: true },
+  { id: 'claude', name: 'Claude Code', kind: 'CLI de IA', command: 'claude', status: 'missing', approved: true },
   { id: 'codex', name: 'Codex CLI', kind: 'CLI de IA', command: 'codex', status: 'missing', approved: true },
   { id: 'kimi', name: 'Kimi CLI', kind: 'CLI de IA', command: 'kimi', status: 'missing', approved: true },
-  { id: 'glm', name: 'GLM CLI', kind: 'CLI de IA', command: 'glm', status: 'missing', approved: true },
-  { id: 'opencode', name: 'OpenCode', kind: 'CLI de IA', command: 'opencode', version: '0.6.2', status: 'installed', approved: false },
-  { id: 'ollama', name: 'Ollama', kind: 'Modelo local', command: 'ollama', version: '0.12.6', status: 'installed', approved: true },
+  { id: 'glm', name: 'GLM CLI (Z.ai)', kind: 'CLI de IA', command: 'zai', status: 'missing', approved: true },
+  { id: 'antigravity', name: 'Antigravity CLI', kind: 'CLI de IA', command: 'agy', status: 'missing', approved: true },
+  { id: 'opencode', name: 'OpenCode', kind: 'CLI de IA', command: 'opencode', status: 'missing', approved: false },
+  { id: 'ollama', name: 'Ollama', kind: 'Modelo local', command: 'ollama', status: 'missing', approved: true },
   { id: 'lmstudio', name: 'LM Studio', kind: 'Modelo local', command: 'lms', status: 'missing', approved: false },
 ]
