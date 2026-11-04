@@ -151,6 +151,10 @@ function OrganogramaView() {
         agent={selectedAgent}
         agents={agents}
         events={events}
+        serviceOnline={workspace.serviceOnline}
+        hasLiveSession={Boolean(selectedAgent && workspace.liveSessions[selectedAgent.id])}
+        onStartSession={() => selectedAgent && workspace.startAgentSession(selectedAgent.id)}
+        onStopSession={() => selectedAgent && workspace.stopAgentSession(selectedAgent.id)}
         onOpenTerminal={() => setTerminalOpen(true)}
         onTogglePause={() => selectedAgent && togglePause(selectedAgent.id)}
         onRemove={() => setModal('remove')}

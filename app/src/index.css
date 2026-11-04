@@ -602,3 +602,14 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
   .cli-row { grid-template-columns: 40px 1.2fr .9fr 1fr 96px; }
   .cli-row > span:nth-child(4) { display: none; }
 }
+
+/* ===== Serviço local (modo real) ===== */
+.demo-banner--online { border-color: oklch(0.72 0.065 155 / .45); background: oklch(0.72 0.065 155 / .05); }
+.demo-banner--online > svg { color: var(--primitive-sage); }
+.demo-banner code { font-family: var(--font-mono); font-size: 10px; color: var(--accent); }
+.cli-row--real { grid-template-columns: 1.3fr .8fr .8fr 1fr .6fr 110px; }
+.cli-row--head { grid-template-columns: 1.3fr .8fr .8fr 1fr .6fr 110px; }
+.cli-ok { color: var(--primitive-sage); font-weight: 600; }
+.cli-manual { color: var(--text-secondary); font-family: var(--font-mono); font-size: 8px; }
+.org-hint { margin-top: 10px; color: var(--text-secondary); font-size: 10px; line-height: 1.5; }
+.install-log { max-height: 220px; overflow-y: auto; padding: 12px 14px; border: 1px solid var(--border-subtle); border-radius: 7px; background: oklch(0.18 0.006 255); font-family: var(--font-mono); font-size: 10px; line-height: 1.6; }

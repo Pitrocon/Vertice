@@ -1,0 +1,19 @@
+{
+  "name": "vertice-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Serviço local do Vértice — detecção de CLIs, sessões de terminal, streaming e persistência",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.0.0"
+  }
+}

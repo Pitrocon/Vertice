@@ -7,6 +7,10 @@ interface InspectorProps {
   agent?: Agent
   agents: Agent[]
   events: ActivityEvent[]
+  serviceOnline: boolean
+  hasLiveSession: boolean
+  onStartSession: () => void
+  onStopSession: () => void
   onOpenTerminal: () => void
   onTogglePause: () => void
   onRemove: () => void
@@ -15,7 +19,7 @@ interface InspectorProps {
   mobileOpen: boolean
 }
 
-export function Inspector({ agent, agents, events, onOpenTerminal, onTogglePause, onRemove, onSelect, onClose, mobileOpen }: InspectorProps) {
+export function Inspector({ agent, agents, events, serviceOnline, hasLiveSession, onStartSession, onStopSession, onOpenTerminal, onTogglePause, onRemove, onSelect, onClose, mobileOpen }: InspectorProps) {
   const [tab, setTab] = useState<'overview' | 'prompt' | 'activity'>('overview')
   const parentAgent = agent?.createdBy ? agents.find((item) => item.id === agent.createdBy) : undefined
 
@@ -76,7 +80,18 @@ export function Inspector({ agent, agents, events, onOpenTerminal, onTogglePause
             {tab === 'activity' && <EventList events={events} agents={agents} onSelect={onSelect} />}
           </div>
           <div className="inspector-actions">
-            <button className="button button--primary" onClick={onOpenTerminal}><SquareTerminal size={16} /> Abrir terminal</button>
+            {serviceOnline ? (
+              hasLiveSession ? (
+                <button className="button button--secondary" onClick={onStopSession}><SquareTerminal size={16} /> Encerrar sessão real</button>
+              ) : (
+                <button className="button button--primary" onClick={onStartSession}><SquareTerminal size={16} /> Iniciar sessão real</button>
+              )
+            ) : (
+              <button className="button button--primary" onClick={onOpenTerminal}><SquareTerminal size={16} /> Abrir terminal</button>
+            )}
+            {serviceOnline && hasLiveSession && (
+              <button className="button button--secondary" style={{ marginTop: 8 }} onClick={onOpenTerminal}>Ver saída no terminal</button>
+            )}
             <div className="inspector-actions__row">
               <button className="button button--secondary" onClick={onTogglePause}>
                 {agent.status === 'paused' ? <CirclePlay size={15} /> : <CirclePause size={15} />}

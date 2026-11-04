@@ -1,5 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
+import { api, connectEvents, stripAnsi, type DetectedRuntime, type LiveSessionInfo } from '@/lib/api'
 import {
   initialAgents, initialConnections, initialEvents, initialTerminalLines,
   initialGoals, initialWorkItems, initialProjects, initialCliRuntimes,
@@ -66,6 +67,13 @@ interface WorkspaceValue {
   checkCli: (id: string) => void
   installCli: (id: string) => void
   toggleCliApproved: (id: string) => void
+  serviceOnline: boolean
+  realRuntimes: DetectedRuntime[] | null
+  liveSessions: Record<string, LiveSessionInfo>
+  refreshService: () => Promise<void>
+  startAgentSession: (agentId: string) => Promise<void>
+  stopAgentSession: (agentId: string) => Promise<void>
+  installCliReal: (runtimeId: string) => Promise<void>
 }
 
 const WorkspaceContext = createContext<WorkspaceValue | null>(null)
@@ -85,6 +93,58 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [showGrid, setShowGrid] = useState(true)
   const [showMinimap, setShowMinimap] = useState(true)
   const [cliRuntimes, setCliRuntimes] = useState<CliRuntime[]>(initialCliRuntimes)
+  const [serviceOnline, setServiceOnline] = useState(false)
+  const [realRuntimes, setRealRuntimes] = useState<DetectedRuntime[] | null>(null)
+  const [liveSessions, setLiveSessions] = useState<Record<string, LiveSessionInfo>>({})
+  const wsRef = useRef<WebSocket | null>(null)
+
+  const appendSessionOutput = useCallback((agentId: string, data: string) => {
+    const clean = stripAnsi(data)
+    const textLines = clean.split('\n').map((line) => line.trimEnd()).filter((line) => line.length > 0)
+    if (!textLines.length) return
+    setTerminalLines((current) => {
+      const existing = current[agentId] ?? []
+      const merged = [...existing, ...textLines.map((text) => ({ id: crypto.randomUUID(), type: 'output' as const, text }))]
+      return { ...current, [agentId]: merged.slice(-300) }
+    })
+  }, [])
+
+  const refreshService = useCallback(async () => {
+    const online = await api.health()
+    setServiceOnline(online)
+    if (online) {
+      const detected = await api.runtimes()
+      if (detected) setRealRuntimes(detected)
+    }
+  }, [])
+
+  useEffect(() => {
+    let mounted = true
+    const boot = async () => {
+      const online = await api.health()
+      if (!mounted) return
+      setServiceOnline(online)
+      if (!online) return
+      const detected = await api.runtimes()
+      if (detected && mounted) setRealRuntimes(detected)
+      wsRef.current = connectEvents((event) => {
+        if (event.type === 'output') {
+          appendSessionOutput(String(event.agentId), String(event.data ?? ''))
+        } else if (event.type === 'exit' || event.type === 'session-ended') {
+          setLiveSessions((current) => {
+            const entry = Object.entries(current).find(([, session]) => session.id === event.sessionId)
+            if (!entry) return current
+            appendSessionOutput(entry[0], '— sessão encerrada —')
+            const next = { ...current }
+            delete next[entry[0]]
+            return next
+          })
+        }
+      })
+    }
+    void boot()
+    return () => { mounted = false; wsRef.current?.close() }
+  }, [appendSessionOutput])
 
   const activeProject = useMemo(() => projects.find((project) => project.active) ?? projects[0], [projects])
 
@@ -193,6 +253,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setTerminalLines((current) => ({ ...current, [agent.id]: [] }))
       return
     }
+    if (!command.startsWith('/') && liveSessions[agent.id]) {
+      void api.sendInput(liveSessions[agent.id].id, `${command}\r`)
+      return
+    }
     const lines: TerminalLine[] = [{ id: crypto.randomUUID(), type: 'command', text: command }]
     if (command === '/help') {
       lines.push(
@@ -282,6 +346,61 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }, 2400)
   }, [cliRuntimes])
 
+  const RUNTIME_NAME_TO_ID: Record<string, string> = {
+    'Claude Code': 'claude', 'Codex CLI': 'codex', 'Kimi CLI': 'kimi', 'GLM CLI': 'glm',
+    OpenCode: 'opencode', Ollama: 'ollama', 'LM Studio': 'lmstudio', PowerShell: 'powershell',
+  }
+
+  const startAgentSession = useCallback(async (agentId: string) => {
+    const agent = agents.find((item) => item.id === agentId)
+    if (!agent) return
+    if (!serviceOnline) { toast.error('Serviço local offline — inicie o vertice-core'); return }
+    const runtimeId = RUNTIME_NAME_TO_ID[agent.runtime] ?? 'powershell'
+    const detected = realRuntimes?.find((item) => item.id === runtimeId)
+    if (runtimeId !== 'powershell' && detected && detected.status !== 'installed') {
+      toast.error(`${agent.runtime} não está instalado nesta máquina`)
+      return
+    }
+    const session = await api.createSession({ agentId, runtimeId, cwd: activeProject?.path ?? '' })
+    if (!session) { toast.error('Falha ao iniciar a sessão real'); return }
+    setLiveSessions((current) => ({ ...current, [agentId]: session }))
+    setSelectedId(agentId)
+    setTerminalOpen(true)
+    setTerminalLines((current) => ({
+      ...current, [agentId]: [...(current[agentId] ?? []),
+        { id: crypto.randomUUID(), type: 'success', text: `✓ Sessão real iniciada · ${session.command}` },
+        { id: crypto.randomUUID(), type: 'muted', text: `modo ${session.mode} · diretório ${session.cwd}` },
+      ],
+    }))
+    toast.success(`Sessão real de ${agent.name} iniciada`)
+  }, [agents, serviceOnline, realRuntimes, activeProject])
+
+  const stopAgentSession = useCallback(async (agentId: string) => {
+    const session = liveSessions[agentId]
+    if (!session) return
+    await api.killSession(session.id)
+    setLiveSessions((current) => { const next = { ...current }; delete next[agentId]; return next })
+    setTerminalLines((current) => ({
+      ...current, [agentId]: [...(current[agentId] ?? []), { id: crypto.randomUUID(), type: 'muted', text: 'Sessão encerrada pelo usuário.' }],
+    }))
+  }, [liveSessions])
+
+  const installCliReal = useCallback(async (runtimeId: string) => {
+    const target = realRuntimes?.find((item) => item.id === runtimeId)
+    if (!target?.install || !serviceOnline) return
+    const installAgentId = `install-${runtimeId}`
+    const session = await api.createSession({ agentId: installAgentId, runtimeId: 'powershell', cwd: '' })
+    if (!session) { toast.error('Não foi possível abrir o terminal de instalação'); return }
+    setLiveSessions((current) => ({ ...current, [installAgentId]: session }))
+    setTerminalLines((current) => ({
+      ...current, [installAgentId]: [
+        { id: crypto.randomUUID(), type: 'muted', text: `Instalando ${target.name} em um terminal real (PowerShell)…` },
+        { id: crypto.randomUUID(), type: 'command', text: target.install ?? '' },
+      ],
+    }))
+    await api.sendInput(session.id, `${target.install}\r`)
+  }, [realRuntimes, serviceOnline])
+
   const toggleCliApproved = useCallback((id: string) => {
     setCliRuntimes((current) => current.map((cli) => (cli.id === id ? { ...cli, approved: !cli.approved } : cli)))
   }, [])
@@ -294,6 +413,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     runCommand, clearTerminal, resetDemo,
     moveWorkItem, addWorkItem, addGoal, addProject, setActiveProject,
     checkCli, installCli, toggleCliApproved,
+    serviceOnline, realRuntimes, liveSessions, refreshService,
+    startAgentSession, stopAgentSession, installCliReal,
   }
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>

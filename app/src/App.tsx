@@ -93,8 +93,8 @@ function Shell() {
       </div>
 
       <footer className="statusbar">
-        <span><i className="status-dot status-dot--idle" /> Dados simulados no navegador</span>
-        <span>Windows · serviço local em breve</span>
+        <span><i className={`status-dot ${workspace.serviceOnline ? 'status-dot--idle' : 'status-dot--paused'}`} /> {workspace.serviceOnline ? 'Serviço local conectado' : 'Serviço local offline · dados simulados'}</span>
+        <span>Windows · vertice-core :7845</span>
         <span className="statusbar-center">Autonomia total em <strong>{activeProject?.path ?? 'workspace'}</strong></span>
         <span>v0.2 / estrutura</span>
       </footer>
