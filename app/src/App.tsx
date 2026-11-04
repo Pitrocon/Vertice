@@ -20,7 +20,7 @@ const navItems = [
   { to: '/work', label: 'Work', icon: ClipboardList, hint: 'Tarefas e metas' },
   { to: '/projects', label: 'Projects', icon: FolderKanban, hint: 'Projetos' },
   { to: '/organograma', label: 'Organograma', icon: Network, hint: 'Mapa da equipe' },
-  { to: '/org', label: 'Org', icon: Building2, hint: 'CLIs e políticas' },
+  { to: '/org', label: "CLI's", icon: Building2, hint: 'CLIs e políticas' },
 ]
 
 function Shell() {

@@ -17,7 +17,7 @@ export function OrgPage() {
       <header className="page-header">
         <div>
           <span className="section-label">ORGANIZAÇÃO</span>
-          <h1>Org</h1>
+          <h1>CLI's</h1>
           <p>CLIs disponíveis para a equipe, workspaces e políticas do setor</p>
         </div>
       </header>
