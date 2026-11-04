@@ -1,0 +1,242 @@
+VÉRTICE — LOCAL AGENT OS
+Documento de transferência para continuação no modo Work
+Data: 04/11/2026
+Versão visual salva: 9b4c629
+
+============================================================
+1. VISÃO DO PRODUTO
+============================================================
+
+O Vértice será um ecossistema próprio para criar, executar e gerenciar diferentes agentes de IA localmente.
+
+A experiência combina:
+- Terminal como interface principal de trabalho.
+- Canvas/grafo visual para representar agentes, hierarquias e conexões.
+- Um agente Gerente capaz de criar subagentes, delegar tarefas e coordenar a equipe.
+- Integração futura com CLIs de IA e modelos locais.
+- Execução voltada inicialmente para Windows.
+
+Referência de interação: software Maestri, especialmente pela ideia de terminais como nós conectáveis. O objetivo não é copiar o produto, mas criar uma solução própria com hierarquia real entre Gerente e subagentes.
+
+============================================================
+2. DECISÕES CONFIRMADAS PELO USUÁRIO
+============================================================
+
+Sistema operacional inicial:
+- Somente Windows.
+
+Tipos de IA previstos no MVP:
+- CLIs e modelos locais.
+- CLIs representadas no protótipo: Claude Code, Codex CLI e OpenCode.
+- Modelos locais representados: Ollama e LM Studio.
+
+Entrega já realizada:
+- Protótipo visual navegável, sem execução real completa das IAs.
+
+Autonomia do Gerente:
+- Autonomia total dentro do workspace.
+- Pode criar e coordenar agentes sem aprovações intermediárias.
+- Escopo representado no protótipo: C:\work\atlas.
+- Na implementação real, esse escopo deve ser configurável e tecnicamente restrito ao diretório autorizado.
+
+============================================================
+3. O QUE JÁ ESTÁ IMPLEMENTADO
+============================================================
+
+Nome do projeto:
+- Vértice — Local Agent OS.
+
+Interface:
+- Visual escuro, compacto e técnico.
+- Canvas ocupando a área central.
+- Barra lateral com workspace, hierarquia de agentes e integrações previstas.
+- Inspector lateral com detalhes do agente selecionado.
+- Terminal inferior com abas por agente.
+- Barra superior com busca/comandos e preferências do canvas.
+- Layout adaptado para telas menores, embora a experiência principal seja desktop.
+
+Canvas:
+- Nós de agentes arrastáveis.
+- Zoom e enquadramento automático.
+- Minimapa navegável.
+- Conexões criadas manualmente pelos pontos dos nós.
+- Linhas ativas e inativas.
+- Posições e conexões persistidas localmente.
+
+Agentes iniciais da demonstração:
+1. Gerente — Orquestrador principal — Claude Code.
+2. Pesquisador — Inteligência e referências — Ollama.
+3. Arquiteto — Sistemas e especificação — Codex CLI.
+4. Desenvolvedor — Implementação — OpenCode.
+5. Revisor — Qualidade e verificação — Claude Code.
+
+Criação autônoma pelo Gerente:
+- O usuário informa um objetivo.
+- O Gerente cria três agentes simulados: Estrategista, Analista e Executor.
+- Os novos agentes aparecem imediatamente no mapa e na hierarquia.
+- Novas conexões são criadas entre o Gerente e os subagentes.
+- Um registro da delegação é adicionado ao terminal e aos eventos.
+
+Criação manual:
+- Nome.
+- Função.
+- Runtime.
+- Modelo.
+- Supervisor.
+- Instrução de sistema.
+- Escopo herdado do workspace.
+
+Inspector:
+- Tarefa atual.
+- Progresso simulado.
+- Runtime e modelo.
+- Workspace.
+- Origem do agente.
+- Conexões.
+- Prompt de sistema.
+- Eventos.
+- Abrir terminal.
+- Pausar e retomar.
+- Encerrar subagentes com confirmação.
+
+Terminal:
+- Abas para os agentes.
+- Expansão, redução, limpeza e fechamento.
+- Comandos disponíveis na simulação:
+  /help      Lista os comandos.
+  /status    Resume os estados dos agentes.
+  /agents    Lista agentes, runtimes e estados.
+  /create    Abre a criação manual.
+  /delegate  Abre a delegação ao Gerente.
+  /clear     Limpa o terminal atual.
+- Outros comandos são registrados como simulação, sem invocar processos externos.
+
+Outros recursos:
+- Paleta de comandos com Ctrl+K.
+- Atalho G para delegar ao Gerente.
+- Atalho T para abrir o terminal.
+- Preferências para exibir grade e minimapa.
+- Restauração da demonstração inicial.
+- Eventos recentes do workspace.
+
+============================================================
+4. IMPLEMENTAÇÃO ATUAL
+============================================================
+
+Stack do protótipo:
+- React.
+- TypeScript.
+- Vite.
+- React Flow para o canvas e as conexões.
+- Lucide para iconografia.
+- Sonner para notificações.
+- Geist e Geist Mono como fontes locais.
+
+Persistência atual:
+- Navegador, via localStorage.
+- Não há backend, banco de dados ou sincronização entre dispositivos.
+
+Chaves locais utilizadas:
+- vertice.agents
+- vertice.connections
+
+Dados principais de cada agente:
+- id
+- name
+- role
+- kind: manager ou worker
+- runtime
+- model
+- status: working, idle, paused ou queued
+- task
+- progress
+- prompt
+- posição x/y
+- createdBy
+
+Dados principais de cada conexão:
+- id
+- source
+- target
+- label
+- active
+
+Estado atual:
+- Build de produção concluído.
+- Fluxos principais testados em navegador.
+- Nenhum erro de console na verificação final.
+- Criação autônoma, criação manual, persistência, pausa, retomada, remoção, terminal, atalhos, arraste de nós e criação de conexões foram exercitados.
+
+============================================================
+5. LIMITAÇÕES IMPORTANTES
+============================================================
+
+O protótipo ainda NÃO:
+- Executa CLIs reais.
+- Abre processos PowerShell reais.
+- Comunica-se com Ollama ou LM Studio.
+- Executa prompts em modelos.
+- Lê ou escreve arquivos do workspace.
+- Possui fila real de tarefas.
+- Possui memória persistente de conversas ou eventos fora da sessão.
+- Possui backend ou banco de dados.
+- Implementa isolamento real de permissões.
+
+Todos os status, progressos, tarefas e respostas operacionais são demonstrações visuais.
+
+============================================================
+6. PRÓXIMA FASE RECOMENDADA
+============================================================
+
+Transformar o protótipo em um orquestrador local funcional para Windows, preservando a interface atual.
+
+Prioridade 1 — Runtime local:
+- Criar serviço local para gerenciar processos e sessões.
+- Usar PTY compatível com Windows para terminais interativos.
+- Manter streaming de stdout/stderr e eventos de estado.
+- Permitir encerrar e retomar processos com segurança.
+
+Prioridade 2 — Adaptadores de IA:
+- Definir uma interface comum para Claude Code, Codex CLI e OpenCode.
+- Criar adaptadores HTTP para Ollama e LM Studio.
+- Detectar runtimes instalados e reportar disponibilidade real.
+- Não apresentar um runtime como conectado sem verificação.
+
+Prioridade 3 — Orquestração:
+- Implementar fila de tarefas e dependências.
+- Transformar conexões do grafo em rotas reais de mensagens.
+- Permitir que o Gerente proponha e execute a criação de subagentes.
+- Registrar delegações, resultados, erros e cancelamentos.
+
+Prioridade 4 — Persistência:
+- Adicionar banco local, preferencialmente SQLite.
+- Persistir agentes, prompts, conexões, tarefas, eventos e logs.
+- Manter segredos fora do banco em texto aberto e fora do frontend.
+
+Prioridade 5 — Workspace e permissões:
+- Restringir operações ao diretório configurado.
+- Normalizar caminhos e impedir escaping do workspace.
+- Definir política explícita para comandos destrutivos, rede e credenciais.
+- Mesmo com autonomia total no workspace, manter limites técnicos claros fora dele.
+
+============================================================
+7. INSTRUÇÃO INICIAL SUGERIDA PARA O MODO WORK
+============================================================
+
+Continuar o projeto Vértice, um orquestrador local de agentes de IA para Windows. Já existe um protótipo visual navegável com React, TypeScript, Vite e React Flow. Ele possui canvas de agentes, conexões, hierarquia Gerente/subagentes, criação manual, criação autônoma simulada pelo Gerente, inspector e terminal. Os dados atuais ficam apenas no navegador.
+
+A próxima etapa é preservar essa interface e implementar o runtime local real: execução de terminais Windows, adaptadores para Claude Code, Codex CLI, OpenCode, Ollama e LM Studio, streaming de eventos, fila de tarefas e persistência local. O Gerente deve ter autonomia total apenas dentro do workspace configurado. Antes de codificar, revise o projeto existente e proponha a arquitetura de integração com o frontend atual. Não apresente integrações simuladas como execução real.
+
+============================================================
+8. CRITÉRIO DE SUCESSO DA PRÓXIMA ENTREGA
+============================================================
+
+Um primeiro corte vertical funcional deve permitir:
+1. Detectar pelo menos um runtime real instalado.
+2. Criar um agente associado a esse runtime.
+3. Iniciar uma sessão de terminal real no Windows.
+4. Enviar uma tarefa pelo terminal ou pela interface.
+5. Exibir a saída real em streaming.
+6. Atualizar o estado do nó no canvas.
+7. Persistir agente, sessão e eventos localmente.
+8. Permitir que o Gerente crie um subagente real e delegue uma tarefa dentro do workspace.

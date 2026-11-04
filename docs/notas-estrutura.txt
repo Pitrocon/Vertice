@@ -1,0 +1,15 @@
+Ref o Paperclip.ing
+
+Agentes
+Work- Issues and goal
+projects
+organograma(canva)
+
+Org - Seletor de CLI
+-opções (codex, kimi, glm, claude...)
+assim que selecionar confere se tem a CLI instalada,
+caso n tenha instale pelo terminal.
+
+foco nas pessoas nos técnicas.
+
+cores - azul e laranja
