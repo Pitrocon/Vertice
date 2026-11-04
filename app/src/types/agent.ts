@@ -39,9 +39,62 @@ export interface TerminalLine {
   text: string
 }
 
+export type WorkStatus = 'todo' | 'doing' | 'review' | 'done'
+export type WorkPriority = 'alta' | 'media' | 'baixa'
+
+export interface Goal {
+  id: string
+  title: string
+  description: string
+}
+
+export interface WorkItem {
+  id: string
+  title: string
+  status: WorkStatus
+  assigneeId?: string
+  goalId?: string
+  priority: WorkPriority
+}
+
+export interface Project {
+  id: string
+  name: string
+  path: string
+  description: string
+  active?: boolean
+}
+
+export type CliStatus = 'installed' | 'missing' | 'checking' | 'installing'
+
+export interface CliRuntime {
+  id: string
+  name: string
+  kind: 'CLI de IA' | 'Modelo local'
+  command: string
+  version?: string
+  status: CliStatus
+  approved: boolean
+}
+
 export const statusLabels: Record<AgentStatus, string> = {
   working: 'Executando',
   idle: 'Disponível',
   paused: 'Pausado',
   queued: 'Na fila',
+}
+
+export const workStatusLabels: Record<WorkStatus, string> = {
+  todo: 'A fazer',
+  doing: 'Em andamento',
+  review: 'Aguardando aprovação',
+  done: 'Concluído',
+}
+
+export const workStatusOrder: WorkStatus[] = ['todo', 'doing', 'review', 'done']
+
+export const priorityLabels: Record<WorkPriority, string> = {
+  alta: 'Alta',
+  media: 'Média',
+  baixa: 'Baixa',
 }

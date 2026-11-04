@@ -1,4 +1,4 @@
-import type { Agent, AgentConnection, ActivityEvent, TerminalLine } from '@/types/agent'
+import type { Agent, AgentConnection, ActivityEvent, TerminalLine, Goal, WorkItem, Project, CliRuntime } from '@/types/agent'
 
 export const initialAgents: Agent[] = [
   {
@@ -58,4 +58,33 @@ export const initialTerminalLines: TerminalLine[] = [
   { id: 't3', type: 'command', text: 'vertice status --team' },
   { id: 't4', type: 'output', text: '5 agentes  ·  3 executando  ·  1 na fila  ·  1 disponível' },
   { id: 't5', type: 'success', text: '✓ Orquestração simulada. Nenhum processo externo foi iniciado.' },
+]
+
+export const initialGoals: Goal[] = [
+  { id: 'goal-mvp', title: 'Lançar o MVP do Vértice', description: 'Primeira versão utilizável do orquestrador local para o time de TI.' },
+  { id: 'goal-onboarding', title: 'Preparar o onboarding da empresa', description: 'Materiais e políticas para os funcionários instalarem e usarem o Vértice.' },
+]
+
+export const initialWorkItems: WorkItem[] = [
+  { id: 'wi-1', title: 'Especificar contratos do orquestrador', status: 'doing', assigneeId: 'arquiteto', goalId: 'goal-mvp', priority: 'alta' },
+  { id: 'wi-2', title: 'Implementar o shell do terminal', status: 'doing', assigneeId: 'desenvolvedor', goalId: 'goal-mvp', priority: 'alta' },
+  { id: 'wi-3', title: 'Mapear referências de orquestração', status: 'done', assigneeId: 'pesquisador', goalId: 'goal-mvp', priority: 'media' },
+  { id: 'wi-4', title: 'Revisar pacote de implementação', status: 'review', assigneeId: 'revisor', goalId: 'goal-mvp', priority: 'alta' },
+  { id: 'wi-5', title: 'Definir política de workspaces permitidos', status: 'todo', assigneeId: 'arquiteto', goalId: 'goal-onboarding', priority: 'media' },
+  { id: 'wi-6', title: 'Escrever guia de instalação das CLIs', status: 'todo', assigneeId: 'pesquisador', goalId: 'goal-onboarding', priority: 'baixa' },
+]
+
+export const initialProjects: Project[] = [
+  { id: 'proj-atlas', name: 'Atlas', path: 'C:\\work\\atlas', description: 'Projeto principal do Vértice — orquestrador local de agentes.', active: true },
+  { id: 'proj-intranet', name: 'Intranet', path: 'C:\\work\\intranet', description: 'Portal interno da empresa e distribuição da ferramenta.' },
+]
+
+export const initialCliRuntimes: CliRuntime[] = [
+  { id: 'claude', name: 'Claude Code', kind: 'CLI de IA', command: 'claude', version: '2.1.4', status: 'installed', approved: true },
+  { id: 'codex', name: 'Codex CLI', kind: 'CLI de IA', command: 'codex', status: 'missing', approved: true },
+  { id: 'kimi', name: 'Kimi CLI', kind: 'CLI de IA', command: 'kimi', status: 'missing', approved: true },
+  { id: 'glm', name: 'GLM CLI', kind: 'CLI de IA', command: 'glm', status: 'missing', approved: true },
+  { id: 'opencode', name: 'OpenCode', kind: 'CLI de IA', command: 'opencode', version: '0.6.2', status: 'installed', approved: false },
+  { id: 'ollama', name: 'Ollama', kind: 'Modelo local', command: 'ollama', version: '0.12.6', status: 'installed', approved: true },
+  { id: 'lmstudio', name: 'LM Studio', kind: 'Modelo local', command: 'lms', status: 'missing', approved: false },
 ]
