@@ -11,7 +11,12 @@ core/         Serviço local — Express + WebSocket (porta 7845) + node-pty + n
 runtimes/     (futuro) manifestos declarativos das CLIs
 installers/   (futuro) empacotamento para a intranet
 docs/         decisões e contexto (ler alinhamento.md primeiro)
+.agents/skills/  skills do projeto para agentes de IA (índice em SKILLS.md)
+memory.md     MEMÓRIA VIVA: histórico completo e contexto (LEITURA E ATUALIZAÇÃO OBRIGATÓRIA)
+tasks.md      QUADRO DE TAREFAS: checklist de progresso do projeto (ATUALIZAÇÃO OBRIGATÓRIA)
 ```
+
+> **REGRA #1 DE CONTINUIDADE:** Antes de qualquer tarefa, leia `memory.md` e `tasks.md`, e carregue a skill `vertice` (`.agents/skills/vertice/SKILL.md`). Ao concluir qualquer avanço, **registre tudo o que foi feito em `memory.md` e marque a tarefa como concluída (`[x]`) em `tasks.md`**.
 
 ## Como rodar
 
@@ -22,17 +27,16 @@ cd app  && npm install && npm run dev   # frontend
 
 ## Estado atual (o que já é REAL, não simulado)
 
-- Detecção honesta de CLIs instaladas (where + --version; HTTP p/ Ollama/LM Studio)
+- Detecção honesta de CLIs instaladas (where + diretórios padrão do Windows + --version com suporte a `.cmd`; HTTP p/ Ollama/LM Studio)
 - Sessões de terminal reais via node-pty/ConPTY (cmd.exe /c para shims .cmd)
 - Streaming de saída via WebSocket; terminal do app envia input para a sessão viva
 - Instalação guiada de CLIs (Claude, Codex, Kimi, GLM/Z.ai, Antigravity, OpenCode; Ollama via winget)
-- Persistência local em SQLite (core/data/vertice.db): sessões e eventos
+- Persistência completa em SQLite (`core/data/vertice.db`): projetos, agentes, conexões, metas, tarefas (`work_items`), sessões e eventos, sincronizados em tempo real via REST + WebSocket
 
 ## O que ainda é simulado
 
-- Agentes, conexões, tarefas, metas e projetos (localStorage; seed em app/src/data/initial.ts)
-- Estados/progresso dos agentes; delegação do Gerente cria equipe fictícia
-- Políticas da página CLI's (checkboxes sem efeito)
+- Estados/progresso dos agentes; delegação do Gerente ainda cria equipe de modelo sem abrir processos reais (embora já salve no SQLite)
+- Confinamento técnico de workspace no backend e políticas da página CLI's (checkboxes sem efeito)
 
 ## Regras do projeto
 

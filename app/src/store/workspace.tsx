@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
-import { api, connectEvents, stripAnsi, type DetectedRuntime, type LiveSessionInfo } from '@/lib/api'
+import { api, connectEvents, stripAnsi, type DetectedRuntime, type LiveSessionInfo, type WorkspaceSnapshot } from '@/lib/api'
 import {
   initialAgents, initialConnections, initialEvents, initialTerminalLines,
   initialGoals, initialWorkItems, initialProjects, initialCliRuntimes,
@@ -78,6 +78,11 @@ interface WorkspaceValue {
 
 const WorkspaceContext = createContext<WorkspaceValue | null>(null)
 
+const RUNTIME_NAME_TO_ID: Record<string, string> = {
+  'Claude Code': 'claude', 'Codex CLI': 'codex', 'Kimi CLI': 'kimi', 'GLM CLI': 'glm', 'GLM CLI (Z.ai)': 'glm', 'Antigravity CLI': 'antigravity',
+  OpenCode: 'opencode', Ollama: 'ollama', 'LM Studio': 'lmstudio', PowerShell: 'powershell',
+}
+
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [agents, setAgents] = usePersistentState<Agent[]>('vertice.agents', initialAgents)
   const [connections, setConnections] = usePersistentState<AgentConnection[]>('vertice.connections', initialConnections)
@@ -98,6 +103,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [liveSessions, setLiveSessions] = useState<Record<string, LiveSessionInfo>>({})
   const wsRef = useRef<WebSocket | null>(null)
 
+  const applySnapshot = useCallback((snapshot: WorkspaceSnapshot | null) => {
+    if (!snapshot) return
+    setProjects(snapshot.projects)
+    setAgents(snapshot.agents)
+    setConnections(snapshot.connections)
+    setGoals(snapshot.goals)
+    setWorkItems(snapshot.workItems)
+    if (snapshot.events?.length) setEvents(snapshot.events)
+  }, [setProjects, setAgents, setConnections, setGoals, setWorkItems])
+
   const appendSessionOutput = useCallback((agentId: string, data: string) => {
     const clean = stripAnsi(data)
     const textLines = clean.split('\n').map((line) => line.trimEnd()).filter((line) => line.length > 0)
@@ -113,10 +128,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const online = await api.health()
     setServiceOnline(online)
     if (online) {
-      const detected = await api.runtimes()
+      const [detected, snapshot] = await Promise.all([api.runtimes(), api.getWorkspace()])
       if (detected) setRealRuntimes(detected)
+      applySnapshot(snapshot)
     }
-  }, [])
+  }, [applySnapshot])
 
   useEffect(() => {
     let mounted = true
@@ -125,11 +141,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       if (!mounted) return
       setServiceOnline(online)
       if (!online) return
-      const detected = await api.runtimes()
-      if (detected && mounted) setRealRuntimes(detected)
+      const [detected, snapshot] = await Promise.all([api.runtimes(), api.getWorkspace()])
+      if (!mounted) return
+      if (detected) setRealRuntimes(detected)
+      applySnapshot(snapshot)
       wsRef.current = connectEvents((event) => {
         if (event.type === 'output') {
           appendSessionOutput(String(event.agentId), String(event.data ?? ''))
+        } else if (event.type === 'workspace-updated' && event.snapshot) {
+          applySnapshot(event.snapshot as WorkspaceSnapshot)
         } else if (event.type === 'exit' || event.type === 'session-ended') {
           setLiveSessions((current) => {
             const entry = Object.entries(current).find(([, session]) => session.id === event.sessionId)
@@ -144,7 +164,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
     void boot()
     return () => { mounted = false; wsRef.current?.close() }
-  }, [appendSessionOutput])
+  }, [appendSessionOutput, applySnapshot])
 
   const activeProject = useMemo(() => projects.find((project) => project.active) ?? projects[0], [projects])
 
@@ -154,7 +174,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const setAgentPosition = useCallback((id: string, x: number, y: number) => {
     setAgents((current) => current.map((agent) => (agent.id === id ? { ...agent, x, y } : agent)))
-  }, [setAgents])
+    if (serviceOnline) void api.patchAgent(id, { x, y })
+  }, [setAgents, serviceOnline])
 
   const addConnection = useCallback((source: string, target: string) => {
     if (!source || !target || source === target) return
@@ -162,89 +183,103 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       toast.info('Estes agentes já estão conectados')
       return
     }
-    setConnections((current) => [...current, { id: crypto.randomUUID(), source, target, label: 'vincula' }])
+    const conn: AgentConnection = { id: crypto.randomUUID(), source, target, label: 'vincula' }
+    setConnections((current) => [...current, conn])
     addEvent(source, `Nova conexão com ${agents.find((a) => a.id === target)?.name}`, 'system')
+    if (serviceOnline) void api.createConnection(conn).then(applySnapshot)
     toast.success('Conexão criada no organograma')
-  }, [connections, agents, setConnections, addEvent])
+  }, [connections, agents, setConnections, addEvent, serviceOnline, applySnapshot])
 
   const createAgent = useCallback((input: NewAgentInput) => {
     const id = `${input.name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString(36)}`
-    setAgents((current) => {
-      const workerCount = current.filter((agent) => agent.kind === 'worker').length
-      const agent: Agent = {
-        id, name: input.name, role: input.role, kind: 'worker', runtime: input.runtime, model: input.model,
-        status: 'idle', task: 'Aguardando primeira tarefa', progress: 0, prompt: input.prompt,
-        x: 80 + (workerCount % 3) * 310, y: 560 + Math.floor(workerCount / 3) * 190, createdBy: input.parentId,
-      }
-      return [...current, agent]
-    })
+    const workerCount = agents.filter((agent) => agent.kind === 'worker').length
+    const agent: Agent = {
+      id, name: input.name, role: input.role, kind: 'worker', runtime: input.runtime, model: input.model,
+      status: 'idle', task: 'Aguardando primeira tarefa', progress: 0, prompt: input.prompt,
+      x: 80 + (workerCount % 3) * 310, y: 560 + Math.floor(workerCount / 3) * 190, createdBy: input.parentId,
+    }
+    setAgents((current) => [...current, agent])
     setConnections((current) => [...current, { id: crypto.randomUUID(), source: input.parentId, target: id, label: 'delega' }])
     setSelectedId(id)
     setModal(null)
     addEvent(input.parentId, `${input.name} criado e vinculado à equipe`, 'create')
+    if (serviceOnline) void api.createAgent({ ...agent, parentId: input.parentId }).then(applySnapshot)
     toast.success(`${input.name} adicionado à equipe`)
-  }, [setAgents, setConnections, addEvent])
+  }, [agents, setAgents, setConnections, addEvent, serviceOnline, applySnapshot])
 
   const delegateToManager = useCallback((objective: string) => {
     const stamp = Date.now().toString(36)
-    setAgents((currentAgents) => {
-      const manager = currentAgents.find((agent) => agent.kind === 'manager') ?? currentAgents[0]
-      const existingNames = new Set(currentAgents.map((agent) => agent.name))
-      const uniqueName = (base: string) => {
-        if (!existingNames.has(base)) return base
-        let index = 2
-        while (existingNames.has(`${base} ${index}`)) index += 1
-        return `${base} ${index}`
-      }
-      const templates = [
-        { name: 'Estrategista', role: 'Estratégia e decomposição', runtime: 'Claude Code', model: 'claude-sonnet', task: 'Decompondo o objetivo em entregas', prompt: `Decomponha este objetivo em entregas coordenáveis: ${objective}` },
-        { name: 'Analista', role: 'Análise e contexto', runtime: 'Ollama', model: 'qwen3:14b', task: 'Analisando contexto e restrições', prompt: `Analise contexto, dados e restrições para: ${objective}` },
-        { name: 'Executor', role: 'Execução da entrega', runtime: 'Codex CLI', model: 'gpt-codex', task: 'Preparando o plano de execução', prompt: `Execute a entrega principal e reporte o resultado para: ${objective}` },
-      ]
-      const startIndex = currentAgents.filter((agent) => agent.kind === 'worker').length
-      const newAgents: Agent[] = templates.map((template, index) => ({
-        ...template, id: `${template.name.toLowerCase()}-${stamp}-${index}`, name: uniqueName(template.name), kind: 'worker' as const,
-        status: index === 0 ? 'working' as const : 'queued' as const, progress: index === 0 ? 8 : 0,
-        x: 30 + ((startIndex + index) % 3) * 315, y: 570 + Math.floor((startIndex + index) / 3) * 195, createdBy: manager.id,
-      }))
-      setConnections((current) => [...current, ...newAgents.map((agent) => ({ id: crypto.randomUUID(), source: manager.id, target: agent.id, label: 'delega', active: agent.status === 'working' }))])
-      setTerminalLines((current) => ({
-        ...current, [manager.id]: [...(current[manager.id] ?? []),
-          { id: crypto.randomUUID(), type: 'command', text: `vertice delegate "${objective}"` },
-          { id: crypto.randomUUID(), type: 'success', text: `✓ Equipe simulada criada: ${newAgents.map((agent) => agent.name).join(', ')}` },
-          { id: crypto.randomUUID(), type: 'muted', text: 'Nenhum processo externo foi iniciado.' },
-        ],
-      }))
-      addEvent(manager.id, `Equipe de ${newAgents.length} agentes criada para novo objetivo`, 'delegate')
-      setSelectedId(manager.id)
-      return [...currentAgents.map((agent) => agent.id === manager.id ? { ...agent, status: 'working' as const, task: objective, progress: 12 } : agent), ...newAgents]
-    })
+    const manager = agents.find((agent) => agent.kind === 'manager') ?? agents[0]
+    const existingNames = new Set(agents.map((agent) => agent.name))
+    const uniqueName = (base: string) => {
+      if (!existingNames.has(base)) return base
+      let index = 2
+      while (existingNames.has(`${base} ${index}`)) index += 1
+      return `${base} ${index}`
+    }
+    const templates = [
+      { name: 'Estrategista', role: 'Estratégia e decomposição', runtime: 'Claude Code', model: 'claude-sonnet', task: 'Decompondo o objetivo em entregas', prompt: `Decomponha este objetivo em entregas coordenáveis: ${objective}` },
+      { name: 'Analista', role: 'Análise e contexto', runtime: 'Ollama', model: 'qwen3:14b', task: 'Analisando contexto e restrições', prompt: `Analise contexto, dados e restrições para: ${objective}` },
+      { name: 'Executor', role: 'Execução da entrega', runtime: 'Codex CLI', model: 'gpt-codex', task: 'Preparando o plano de execução', prompt: `Execute a entrega principal e reporte o resultado para: ${objective}` },
+    ]
+    const startIndex = agents.filter((agent) => agent.kind === 'worker').length
+    const newAgents: Agent[] = templates.map((template, index) => ({
+      ...template, id: `${template.name.toLowerCase()}-${stamp}-${index}`, name: uniqueName(template.name), kind: 'worker' as const,
+      status: index === 0 ? 'working' as const : 'queued' as const, progress: index === 0 ? 8 : 0,
+      x: 30 + ((startIndex + index) % 3) * 315, y: 570 + Math.floor((startIndex + index) / 3) * 195, createdBy: manager.id,
+    }))
+    const newConnections: AgentConnection[] = newAgents.map((agent) => ({
+      id: crypto.randomUUID(), source: manager.id, target: agent.id, label: 'delega', active: agent.status === 'working',
+    }))
+
+    setAgents((currentAgents) => [
+      ...currentAgents.map((agent) => agent.id === manager.id ? { ...agent, status: 'working' as const, task: objective, progress: 12 } : agent),
+      ...newAgents,
+    ])
+    setConnections((current) => [...current, ...newConnections])
+    setTerminalLines((current) => ({
+      ...current, [manager.id]: [...(current[manager.id] ?? []),
+        { id: crypto.randomUUID(), type: 'command', text: `vertice delegate "${objective}"` },
+        { id: crypto.randomUUID(), type: 'success', text: `✓ Equipe simulada criada: ${newAgents.map((agent) => agent.name).join(', ')}` },
+        { id: crypto.randomUUID(), type: 'muted', text: 'Nenhum processo externo foi iniciado.' },
+      ],
+    }))
+    const eventMessage = `Equipe de ${newAgents.length} agentes criada para novo objetivo`
+    addEvent(manager.id, eventMessage, 'delegate')
+    if (serviceOnline) {
+      void api.batchDelegate({
+        agents: newAgents,
+        connections: newConnections,
+        managerUpdate: { id: manager.id, status: 'working', task: objective, progress: 12 },
+        eventMessage,
+      }).then(applySnapshot)
+    }
+    setSelectedId(manager.id)
     setModal(null)
     setTerminalOpen(true)
     toast.success('Gerente criou uma equipe de 3 agentes')
-  }, [setAgents, setConnections, addEvent])
+  }, [agents, setAgents, setConnections, addEvent, serviceOnline, applySnapshot])
 
   const togglePause = useCallback((id: string) => {
-    setAgents((current) => current.map((agent) => {
-      if (agent.id !== id) return agent
-      const nextStatus: Agent['status'] = agent.status === 'paused' ? 'idle' : 'paused'
-      addEvent(id, nextStatus === 'paused' ? 'Agente pausado' : 'Agente retomado', 'system')
-      toast.success(nextStatus === 'paused' ? `${agent.name} pausado` : `${agent.name} disponível`)
-      return { ...agent, status: nextStatus }
-    }))
-  }, [setAgents, addEvent])
+    const target = agents.find((agent) => agent.id === id)
+    if (!target) return
+    const nextStatus: Agent['status'] = target.status === 'paused' ? 'idle' : 'paused'
+    setAgents((current) => current.map((agent) => (agent.id === id ? { ...agent, status: nextStatus } : agent)))
+    addEvent(id, nextStatus === 'paused' ? 'Agente pausado' : 'Agente retomado', 'system')
+    if (serviceOnline) void api.patchAgent(id, { status: nextStatus }).then(applySnapshot)
+    toast.success(nextStatus === 'paused' ? `${target.name} pausado` : `${target.name} disponível`)
+  }, [agents, setAgents, addEvent, serviceOnline, applySnapshot])
 
   const removeAgent = useCallback((id: string) => {
-    setAgents((current) => {
-      const target = current.find((agent) => agent.id === id)
-      if (!target || target.kind === 'manager') return current
-      setConnections((connections) => connections.filter((connection) => connection.source !== id && connection.target !== id))
-      toast.success(`${target.name} removido da equipe`)
-      return current.filter((agent) => agent.id !== id)
-    })
+    const target = agents.find((agent) => agent.id === id)
+    if (!target || target.kind === 'manager') return
+    setConnections((current) => current.filter((connection) => connection.source !== id && connection.target !== id))
+    setAgents((current) => current.filter((agent) => agent.id !== id))
+    if (serviceOnline) void api.deleteAgent(id).then(applySnapshot)
+    toast.success(`${target.name} removido da equipe`)
     setSelectedId('gerente')
     setModal(null)
-  }, [setAgents, setConnections])
+  }, [agents, setAgents, setConnections, serviceOnline, applySnapshot])
 
   const runCommand = useCallback((command: string) => {
     const agent = agents.find((item) => item.id === selectedId) ?? agents[0]
@@ -280,7 +315,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       )
     }
     setTerminalLines((current) => ({ ...current, [agent.id]: [...(current[agent.id] ?? []), ...lines] }))
-  }, [agents, selectedId])
+  }, [agents, selectedId, liveSessions])
 
   const clearTerminal = useCallback((agentId: string) => {
     setTerminalLines((current) => ({ ...current, [agentId]: [] }))
@@ -298,33 +333,42 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setSelectedId('gerente')
     setModal(null)
     setTerminalOpen(true)
+    if (serviceOnline) void api.resetWorkspace().then(applySnapshot)
     toast.success('Demonstração restaurada')
-  }, [setAgents, setConnections, setGoals, setWorkItems, setProjects])
+  }, [setAgents, setConnections, setGoals, setWorkItems, setProjects, serviceOnline, applySnapshot])
 
   const moveWorkItem = useCallback((id: string, status: WorkStatus) => {
     setWorkItems((current) => current.map((item) => (item.id === id ? { ...item, status } : item)))
-  }, [setWorkItems])
+    if (serviceOnline) void api.patchWorkItem(id, { status }).then(applySnapshot)
+  }, [setWorkItems, serviceOnline, applySnapshot])
 
   const addWorkItem = useCallback((input: { title: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority'] }) => {
-    setWorkItems((current) => [...current, { id: crypto.randomUUID(), status: 'todo' as const, ...input }])
+    const item: WorkItem = { id: crypto.randomUUID(), status: 'todo' as const, ...input }
+    setWorkItems((current) => [...current, item])
+    if (serviceOnline) void api.createWorkItem(item).then(applySnapshot)
     toast.success('Tarefa criada no quadro')
-  }, [setWorkItems])
+  }, [setWorkItems, serviceOnline, applySnapshot])
 
   const addGoal = useCallback((input: { title: string; description: string }) => {
-    setGoals((current) => [...current, { id: crypto.randomUUID(), ...input }])
+    const goal: Goal = { id: crypto.randomUUID(), ...input }
+    setGoals((current) => [...current, goal])
+    if (serviceOnline) void api.createGoal(goal).then(applySnapshot)
     toast.success('Meta criada')
-  }, [setGoals])
+  }, [setGoals, serviceOnline, applySnapshot])
 
   const addProject = useCallback((input: { name: string; path: string; description: string }) => {
-    setProjects((current) => [...current, { id: crypto.randomUUID(), ...input }])
+    const proj: Project = { id: crypto.randomUUID(), ...input }
+    setProjects((current) => [...current, proj])
+    if (serviceOnline) void api.createProject(proj).then(applySnapshot)
     toast.success(`Projeto ${input.name} criado`)
-  }, [setProjects])
+  }, [setProjects, serviceOnline, applySnapshot])
 
   const setActiveProject = useCallback((id: string) => {
     setProjects((current) => current.map((project) => ({ ...project, active: project.id === id })))
+    if (serviceOnline) void api.activateProject(id).then(applySnapshot)
     const project = projects.find((item) => item.id === id)
     if (project) toast.success(`Projeto ativo: ${project.name}`)
-  }, [setProjects, projects])
+  }, [setProjects, projects, serviceOnline, applySnapshot])
 
   const checkCli = useCallback((id: string) => {
     setCliRuntimes((current) => current.map((cli) => (cli.id === id ? { ...cli, status: 'checking' as const } : cli)))
@@ -345,11 +389,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       toast.success(`${cli.name} instalado (demonstração)`, { description: 'A instalação real será executada pelo serviço local.' })
     }, 2400)
   }, [cliRuntimes])
-
-  const RUNTIME_NAME_TO_ID: Record<string, string> = {
-    'Claude Code': 'claude', 'Codex CLI': 'codex', 'Kimi CLI': 'kimi', 'GLM CLI': 'glm', 'GLM CLI (Z.ai)': 'glm', 'Antigravity CLI': 'antigravity',
-    OpenCode: 'opencode', Ollama: 'ollama', 'LM Studio': 'lmstudio', PowerShell: 'powershell',
-  }
 
   const startAgentSession = useCallback(async (agentId: string) => {
     const agent = agents.find((item) => item.id === agentId)
@@ -420,6 +459,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useWorkspace() {
   const context = useContext(WorkspaceContext)
   if (!context) throw new Error('useWorkspace deve ser usado dentro de WorkspaceProvider')

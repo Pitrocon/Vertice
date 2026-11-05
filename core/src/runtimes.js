@@ -1,4 +1,7 @@
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 
 // Catálogo de runtimes suportados. Cada entrada descreve como detectar,
 // versionar, instalar e iniciar uma sessão interativa da CLI.
@@ -14,9 +17,20 @@ export const RUNTIME_CATALOG = [
   { id: 'powershell',  name: 'PowerShell',      kind: 'Shell',        command: 'powershell', versionArgs: ['--version'], sessionArgs: ['-NoLogo'], install: null },
 ]
 
+const EXTRA_BIN_DIRS = [
+  process.env.APPDATA ? join(process.env.APPDATA, 'npm') : null,
+  process.env.APPDATA ? join(process.env.APPDATA, 'kimi-desktop', 'daimon-share', 'daimon', 'npm-global') : null,
+  process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'agy', 'bin') : null,
+  join(homedir(), '.kimi-code', 'bin'),
+  join(homedir(), '.local', 'bin'),
+].filter(Boolean)
+
 function run(cmd, args, timeoutMs = 6000) {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: timeoutMs, windowsHide: true }, (error, stdout, stderr) => {
+    const isBatch = /\.(cmd|bat)$/i.test(cmd)
+    const execCmd = isBatch ? 'cmd.exe' : cmd
+    const execArgs = isBatch ? ['/c', cmd, ...args] : args
+    execFile(execCmd, execArgs, { timeout: timeoutMs, windowsHide: true }, (error, stdout, stderr) => {
       if (error) return resolve(null)
       resolve((stdout || stderr || '').trim())
     })
@@ -25,8 +39,18 @@ function run(cmd, args, timeoutMs = 6000) {
 
 async function where(command) {
   const out = await run('where', [command])
-  if (!out) return null
-  return out.split('\n')[0].trim() || null
+  if (out) {
+    const candidates = out.split('\n').map((line) => line.trim()).filter(Boolean)
+    const executable = candidates.find((candidate) => /\.(exe|cmd|bat)$/i.test(candidate))
+    if (executable ?? candidates[0]) return executable ?? candidates[0]
+  }
+  for (const dir of EXTRA_BIN_DIRS) {
+    for (const ext of ['.exe', '.cmd', '.bat']) {
+      const candidate = join(dir, `${command}${ext}`)
+      if (existsSync(candidate)) return candidate
+    }
+  }
+  return null
 }
 
 async function httpCheck(url, timeoutMs = 2500) {
@@ -52,7 +76,7 @@ export async function detectRuntimes() {
       return { ...runtime, status: 'missing', version: null, path: null }
     }
     let version = null
-    const versionOut = await run(runtime.command, runtime.versionArgs)
+    const versionOut = await run(path, runtime.versionArgs)
     if (versionOut) {
       const match = versionOut.match(/\d+\.\d+(\.\d+)?/)
       version = match ? match[0] : versionOut.split('\n')[0].slice(0, 60)
@@ -65,9 +89,5 @@ export async function detectRuntimes() {
 // Resolve o caminho executável real. `where` pode retornar shims sem extensão
 // (ex.: scripts bash do npm) — o Windows precisa de .exe/.cmd/.bat.
 export async function resolveCommand(command) {
-  const out = await run('where', [command])
-  if (!out) return command
-  const candidates = out.split('\n').map((line) => line.trim()).filter(Boolean)
-  const executable = candidates.find((candidate) => /\.(exe|cmd|bat)$/i.test(candidate))
-  return executable ?? candidates[0]
+  return (await where(command)) ?? command
 }
