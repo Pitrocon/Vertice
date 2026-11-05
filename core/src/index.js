@@ -1,15 +1,21 @@
-import { createServer } from 'node:http'
+﻿import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
+import { mkdirSync } from 'node:fs'
+import { execFile } from 'node:child_process'
 import express from 'express'
 import { WebSocketServer } from 'ws'
 import { detectRuntimes, resolveCommand, RUNTIME_CATALOG } from './runtimes.js'
 import { startSession, writeToSession, resizeSession, killSession, listActiveSessions } from './sessions.js'
+import { assertAllowedCwd, WorkspaceError } from './workspace.js'
+import { configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem } from './orchestrator.js'
 import {
   listSessions, listEvents, recordEvent,
   getWorkspaceSnapshot, seedInitialData,
   createProject, activateProject,
   upsertAgent, patchAgent, deleteAgent,
   createConnection, createGoal, createWorkItem, patchWorkItem,
+  getSettings, getSetting, setSetting,
+  listAllowedWorkspaces, addAllowedWorkspace, removeAllowedWorkspace,
 } from './db.js'
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 7845
@@ -47,6 +53,39 @@ app.get('/api/catalog', (_req, res) => {
   res.json({ catalog: RUNTIME_CATALOG })
 })
 
+app.post('/api/runtimes/:id/install', async (req, res) => {
+  const runtime = RUNTIME_CATALOG.find((item) => item.id === req.params.id)
+  if (!runtime) return res.status(404).json({ error: 'Runtime não encontrado no catálogo' })
+
+  // Confinamento: so instala runtimes aprovados pelo TI.
+  const approved = getSetting('approvedRuntimes') ?? []
+  if (!approved.includes(runtime.id)) {
+    return res.status(403).json({ error: `O runtime "${runtime.id}" não está aprovado pelo TI.` })
+  }
+  if (!runtime.install) {
+    return res.status(400).json({ error: `Não há comando de instalação oficial para "${runtime.id}".` })
+  }
+
+  recordEvent('gerente', `Instalando ${runtime.name}…`, 'system')
+  try {
+    // Executa APENAS o comando oficial do catalogo, via PowerShell, sem input do usuario.
+    await new Promise((resolve, reject) => {
+      execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-Command', runtime.install], { timeout: 180000, windowsHide: true }, (error, stdout, stderr) => {
+        if (error) return reject(new Error((stderr || error.message || '').slice(0, 300)))
+        resolve(stdout)
+      })
+    })
+  } catch (error) {
+    recordEvent('gerente', `Falha ao instalar ${runtime.name}: ${error.message}`, 'system')
+    return res.status(500).json({ error: `Falha na instalação: ${error.message}` })
+  }
+
+  // Revalida a versao apos instalar.
+  const detected = (await detectRuntimes()).find((r) => r.id === runtime.id)
+  recordEvent('gerente', `${runtime.name} instalado — versão ${detected?.version ?? 'desconhecida'}`, 'system')
+  res.json({ runtime: detected, snapshot: broadcastSnapshot() })
+})
+
 app.get('/api/workspace', (_req, res) => {
   res.json(getWorkspaceSnapshot())
 })
@@ -54,6 +93,40 @@ app.get('/api/workspace', (_req, res) => {
 app.post('/api/workspace/reset', (_req, res) => {
   seedInitialData(true)
   recordEvent('gerente', 'Dados iniciais restaurados no SQLite', 'system')
+  res.json(broadcastSnapshot())
+})
+
+// --- Settings (workspaces permitidos, runtimes aprovados, politicas) ------
+
+app.get('/api/settings', (_req, res) => {
+  res.json({ settings: getSettings(), allowedWorkspaces: listAllowedWorkspaces() })
+})
+
+app.patch('/api/settings', (req, res) => {
+  const { approvedRuntimes, policies } = req.body ?? {}
+  if (approvedRuntimes !== undefined) {
+    if (!Array.isArray(approvedRuntimes)) return res.status(400).json({ error: 'approvedRuntimes deve ser uma lista' })
+    setSetting('approvedRuntimes', approvedRuntimes)
+  }
+  if (policies !== undefined) {
+    if (typeof policies !== 'object' || policies === null) return res.status(400).json({ error: 'policies deve ser um objeto' })
+    setSetting('policies', policies)
+  }
+  recordEvent('gerente', 'Políticas/aprovações atualizadas', 'system')
+  res.json(broadcastSnapshot())
+})
+
+app.post('/api/settings/workspaces', (req, res) => {
+  const { id, path } = req.body ?? {}
+  if (!path) return res.status(400).json({ error: 'path é obrigatório' })
+  addAllowedWorkspace({ id: id || randomUUID(), path })
+  recordEvent('gerente', `Workspace permitido adicionado: ${path}`, 'system')
+  res.json(broadcastSnapshot())
+})
+
+app.delete('/api/settings/workspaces/:id', (req, res) => {
+  removeAllowedWorkspace(req.params.id)
+  recordEvent('gerente', `Workspace permitido removido: ${req.params.id}`, 'system')
   res.json(broadcastSnapshot())
 })
 
@@ -146,13 +219,107 @@ app.patch('/api/work-items/:id', (req, res) => {
   res.json(broadcastSnapshot())
 })
 
+// Resolve o cwd efetivo: o informado, senao o do projeto ativo.
+function resolveSessionCwd(requestedCwd) {
+  if (requestedCwd && requestedCwd.trim() !== '') return requestedCwd
+  const snapshot = getWorkspaceSnapshot()
+  const active = snapshot.projects.find((p) => p.active) ?? snapshot.projects[0]
+  return active?.path ?? ''
+}
+
+// --- Orquestracao real (Bloco B) -----------------------------------------
+
+// B2: despachar uma tarefa para a sessao real do agente responsavel.
+app.post('/api/work-items/:id/dispatch', async (req, res) => {
+  try {
+    const result = await dispatchWorkItem(req.params.id)
+    res.json({ ...result, snapshot: getWorkspaceSnapshot() })
+  } catch (error) {
+    if (error instanceof WorkspaceError) return res.status(403).json({ error: error.message })
+    res.status(400).json({ error: error.message })
+  }
+})
+
+// B3 (manual por ora): marcar conclusao de uma tarefa (review/failed) com resultado.
+app.post('/api/work-items/:id/complete', async (req, res) => {
+  const { result, error } = req.body ?? {}
+  const out = await completeWorkItem(req.params.id, { result, error })
+  res.json({ ...out, snapshot: getWorkspaceSnapshot() })
+})
+
+// B5: Gerente real cria subagentes + conexoes + tarefas a partir de um objetivo.
+// Espera { managerId, objective, team: [{ name, role, runtime, model, prompt }], maxAgents }.
+app.post('/api/orchestrator/delegate', (req, res) => {
+  const { managerId = 'gerente', objective, team = [], maxAgents = 6 } = req.body ?? {}
+  if (!objective || typeof objective !== 'string') {
+    return res.status(400).json({ error: 'objective é obrigatório' })
+  }
+  const snapshot = getWorkspaceSnapshot()
+  const manager = snapshot.agents.find((a) => a.id === managerId)
+  if (!manager) return res.status(404).json({ error: 'Gerente não encontrado' })
+
+  // Validacao: runtime de cada subagente precisa estar aprovado; respeitar limite.
+  const approved = getSetting('approvedRuntimes') ?? []
+  const nameToId = { 'Claude Code': 'claude', 'Codex CLI': 'codex', 'Kimi CLI': 'kimi', 'GLM CLI (Z.ai)': 'glm', 'Antigravity CLI': 'antigravity', OpenCode: 'opencode', Ollama: 'ollama', 'LM Studio': 'lmstudio', PowerShell: 'powershell' }
+  const currentWorkers = snapshot.agents.filter((a) => a.kind === 'worker').length
+  if (currentWorkers + team.length > maxAgents) {
+    return res.status(400).json({ error: `Limite de ${maxAgents} agentes excedido.` })
+  }
+  for (const member of team) {
+    const rid = nameToId[member.runtime] ?? 'powershell'
+    if (!approved.includes(rid)) {
+      return res.status(403).json({ error: `Runtime "${member.runtime}" do subagente ${member.name} não está aprovado.` })
+    }
+  }
+
+  // Cria subagentes reais + conexoes manager->sub + uma tarefa por subagente.
+  const stamp = Date.now().toString(36)
+  const created = []
+  team.forEach((member, index) => {
+    const id = `${(member.name || 'agente').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${stamp}-${index}`
+    upsertAgent({
+      id, name: member.name, role: member.role ?? 'Subagente', kind: 'worker',
+      runtime: member.runtime, model: member.model ?? 'local/default',
+      status: 'idle', task: 'Aguardando despacho', progress: 0,
+      prompt: member.prompt ?? `Contribua para o objetivo: ${objective}`,
+      x: 40 + ((currentWorkers + index) % 3) * 315, y: 580 + Math.floor((currentWorkers + index) / 3) * 195,
+      createdBy: managerId,
+    })
+    createConnection({ id: randomUUID(), source: managerId, target: id, label: 'delega', active: false })
+    const taskId = randomUUID()
+    createWorkItem({ id: taskId, title: `${member.role ?? member.name}: ${objective}`, status: 'todo', assigneeId: id, createdBy: managerId })
+    created.push({ agentId: id, taskId })
+  })
+  recordEvent(managerId, `Gerente criou ${team.length} subagente(s) real(is) para: ${objective}`, 'delegate')
+  res.json({ ok: true, created, snapshot: broadcastSnapshot() })
+})
+
 app.post('/api/sessions', async (req, res) => {
   const { agentId, runtimeId, cwd } = req.body ?? {}
   const runtime = RUNTIME_CATALOG.find((item) => item.id === runtimeId)
   if (!agentId || !runtime) return res.status(400).json({ error: 'agentId e runtimeId válidos são obrigatórios' })
+
+  // Confinamento: runtime precisa estar aprovado.
+  const approved = getSetting('approvedRuntimes') ?? []
+  if (!approved.includes(runtimeId)) {
+    return res.status(403).json({ error: `O runtime "${runtimeId}" não está aprovado pelo TI.` })
+  }
+
+  // Confinamento: cwd precisa estar dentro de um workspace permitido.
+  let safeCwd
+  try {
+    const requested = resolveSessionCwd(cwd)
+    safeCwd = assertAllowedCwd(requested, listAllowedWorkspaces())
+    // Cria o diretorio do workspace se ainda nao existir (ja validado como seguro).
+    mkdirSync(safeCwd, { recursive: true })
+  } catch (error) {
+    if (error instanceof WorkspaceError) return res.status(403).json({ error: error.message })
+    return res.status(500).json({ error: `Falha ao validar o diretório: ${error.message}` })
+  }
+
   try {
     const command = await resolveCommand(runtime.command)
-    const session = startSession({ agentId, command, args: runtime.sessionArgs, cwd, onEvent: broadcast })
+    const session = startSession({ agentId, command, args: runtime.sessionArgs, cwd: safeCwd, onEvent: broadcast })
     broadcast({ type: 'session-started', ...session })
     res.json({ session })
   } catch (error) {
@@ -205,8 +372,11 @@ wss.on('connection', (socket) => {
   })
 })
 
+configureOrchestrator({ broadcast })
 recordEvent(null, 'Serviço local do Vértice iniciado', 'system')
 
 server.listen(PORT, () => {
   console.log(`[vertice-core] ouvindo em http://localhost:${PORT} (ws em /ws)`)
 })
+
+

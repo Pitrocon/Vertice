@@ -1,6 +1,4 @@
-import { spawn as spawnPiped } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { homedir } from 'node:os'
+﻿import { spawn as spawnPiped } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { recordSession, endSession, recordEvent } from './db.js'
 
@@ -13,14 +11,24 @@ try {
 
 const sessions = new Map()
 
-function safeCwd(cwd) {
-  if (cwd && existsSync(cwd)) return cwd
-  return homedir()
+// Ambiente filtrado repassado aos processos: remove variaveis internas do Vertice
+// para nao vazar segredos/config do core para dentro das CLIs.
+function buildChildEnv() {
+  const env = { ...process.env }
+  for (const key of Object.keys(env)) {
+    if (/^VERTICE_/i.test(key)) delete env[key]
+  }
+  return env
 }
 
 export function startSession({ agentId, command, args = [], cwd, onEvent }) {
+  // cwd DEVE chegar aqui ja validado/confinado pela camada de rota (assertAllowedCwd).
+  // Nao ha fallback para homedir(): sem cwd valido, a sessao nao inicia.
+  if (!cwd || typeof cwd !== 'string') {
+    throw new Error('cwd confinado é obrigatório para iniciar a sessão.')
+  }
   const id = randomUUID()
-  const finalCwd = safeCwd(cwd)
+  const childEnv = buildChildEnv()
   let proc
   let mode
 
@@ -33,8 +41,8 @@ export function startSession({ agentId, command, args = [], cwd, onEvent }) {
       name: 'xterm-color',
       cols: 120,
       rows: 30,
-      cwd: finalCwd,
-      env: process.env,
+      cwd,
+      env: childEnv,
     })
     mode = 'pty'
     proc.onData((data) => onEvent({ type: 'output', sessionId: id, agentId, data }))
@@ -44,7 +52,7 @@ export function startSession({ agentId, command, args = [], cwd, onEvent }) {
       onEvent({ type: 'exit', sessionId: id, agentId, exitCode })
     })
   } else {
-    proc = spawnPiped(command, args, { cwd: finalCwd, env: process.env, shell: true })
+    proc = spawnPiped(command, args, { cwd, env: childEnv, shell: true })
     mode = 'pipe'
     proc.stdout.on('data', (data) => onEvent({ type: 'output', sessionId: id, agentId, data: data.toString() }))
     proc.stderr.on('data', (data) => onEvent({ type: 'output', sessionId: id, agentId, data: data.toString() }))
@@ -55,11 +63,11 @@ export function startSession({ agentId, command, args = [], cwd, onEvent }) {
     })
   }
 
-  const session = { id, agentId, command, args, cwd: finalCwd, mode, proc }
+  const session = { id, agentId, command, args, cwd, mode, proc }
   sessions.set(id, session)
-  recordSession({ id, agentId, command: `${command} ${args.join(' ')}`.trim(), cwd: finalCwd })
-  recordEvent(agentId, `Sessão real iniciada: ${command} (${finalCwd})`, 'system')
-  return { id, agentId, command, cwd: finalCwd, mode }
+  recordSession({ id, agentId, command: `${command} ${args.join(' ')}`.trim(), cwd })
+  recordEvent(agentId, `Sessão real iniciada: ${command} (${cwd})`, 'system')
+  return { id, agentId, command, cwd, mode }
 }
 
 export function writeToSession(id, data) {

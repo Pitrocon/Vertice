@@ -78,3 +78,39 @@
 
 **Fase 2 — Confinamento de Workspace e Políticas Reais no Backend (`2.1` a `2.4`):**
 Criar `core/src/workspace.js` para validar tecnicamente os diretórios de projetos (`resolveInside`, `assertAllowedCwd`), bloquear acessos fora do workspace com HTTP `403` (removendo o fallback silencioso para `homedir()`), persistir a aprovação de CLIs e políticas da tela `CLI's` no SQLite e mover a instalação de CLIs para um endpoint dedicado (`POST /api/runtimes/:id/install`).
+
+### [05/11/2026] Blocos A e B do tasks-agentes.md — Confinamento (Fase 2) e Orquestração Real (Fases 3/4)
+Executado pela Opção 1 (implementação direta seguindo as skills). Os agentes customizados em `.kiro/agents/` são para a aba de agentes do Kiro; não são invocáveis como subagentes de implementação, por isso a execução foi direta.
+
+**Bloco A — Confinamento e Políticas (Fase 2, REAL agora):**
+- `core/src/db.js`: tabela `meta` (schema_version), migração idempotente via `columnExists`/`ALTER TABLE` (nunca apaga `data/`). Novas tabelas `settings` (chave/valor JSON) e `allowed_workspaces`. Seed: `approvedRuntimes=[claude,codex,kimi,powershell]`, `policies={allowDestructiveCommands:false,allowNetwork:true,allowCredentials:false}`. Workspace padrão agora `%USERPROFILE%\vertice-workspaces\atlas|intranet` (via `os.homedir()`), migração v2 corrige projetos legados `C:\work\*`. Funções `getSettings/getSetting/setSetting`, `listAllowedWorkspaces/addAllowedWorkspace/removeAllowedWorkspace`; snapshot inclui `settings` e `allowedWorkspaces`.
+- `core/src/workspace.js` (NOVO): `resolveInside(root,p)` (realpath do ancestral existente, case-insensitive Windows, rejeita `..`, UNC, dispositivos, prefixo parecido) e `assertAllowedCwd(cwd, allowed)` → `WorkspaceError` (403), sem fallback para homedir(). Testes `core/test/workspace.test.js`: 13/13.
+- `core/src/sessions.js`: sem `safeCwd()`/homedir; exige cwd válido; `env` filtrado (remove `VERTICE_*`).
+- `core/src/index.js`: `POST /api/sessions` valida cwd (403) e runtime aprovado (403), cria o diretório confinado; novo `POST /api/runtimes/:id/install` (só comando oficial + revalida versão); `GET/PATCH /api/settings` e `POST/DELETE /api/settings/workspaces`.
+- SYNC-A verificado: health 200, settings OK, 403 para ollama (não aprovado) e C:\Windows (fora), sessão válida 200 criando `vertice-workspaces\atlas`.
+
+**Bloco B — Orquestração Real (Fases 3/4):**
+- B1 `db.js`: `work_items` ganhou `parent_task_id, depends_on, result, error, created_by, created_at, updated_at` (migração v3 idempotente). `agents.progress` descontinuado como fonte de verdade.
+- B2/B4/B5 `core/src/orchestrator.js` (NOVO) + `index.js`: `dispatchWorkItem` abre/reusa sessão real confinada e envia a instrução da tarefa (tarefa→doing, agente→working); `completeWorkItem` → review/failed e agente volta a idle (status derivado do real, sem % falsa); `POST /api/orchestrator/delegate` cria subagentes reais + conexões + tarefas validando runtime aprovado e limite; `canDelegate` usa as conexões do organograma. Rotas `POST /api/work-items/:id/dispatch` e `/complete`.
+- SYNC-B verificado com PowerShell (runtime aprovado): delegate criou subagente+tarefa reais (200); dispatch abriu sessão PTY confinada em atlas e marcou doing/working; complete marcou review+result e agente idle. Dados de teste limpos.
+
+**B3 PREPARADO, NÃO ATIVADO:** detecção automática de conclusão via modo não interativo exige CLI de IA instalada E autenticada. O Claude NÃO está autenticado nesta máquina, então a conclusão é manual (mover para review/done). O gancho `completeWorkItem` está pronto para quando houver login.
+
+**INCIDENTE DE ENCODING (corrigido):** editar `tasks.md`/`memory.md` com `Get-Content -Raw` + `Set-Content -Encoding UTF8` (Windows PowerShell) corrompeu os acentos por dupla codificação. Restaurado via `git checkout` e reaplicado com `[System.IO.File]::WriteAllText` + UTF8 sem BOM. REGRA: ao editar arquivos com acentos pelo terminal, usar sempre `[System.IO.File]::ReadAllText/WriteAllText` com UTF8 sem BOM.
+
+**Próximo passo:** Bloco C (frontend honesto) — ligar a tela CLI's a `/api/settings` e `/api/runtimes/:id/install`, remover progresso inventado (C2), ligar o Work kanban ao dispatch (C3) e remover o banner de demonstração quando online (C4). Depois Bloco D (manifestos + empacotamento) e E (fechamento).
+### [05/11/2026] Bloco C concluído — Frontend Honesto (tasks-agentes.md)
+Liga as telas aos dados reais do backend e remove indicadores simulados. Build e lint do app limpos.
+
+- **api.ts:** novos tipos `VerticeSettings`, `VerticePolicies`, `AllowedWorkspace`; `WorkspaceSnapshot` agora inclui `settings`/`allowedWorkspaces`. Novos métodos: `getSettings`, `updateSettings`, `installRuntime`, `dispatchWorkItem`, `completeWorkItem`.
+- **store/workspace.tsx:** estado `settings`/`allowedWorkspaces` populado pelo `applySnapshot`. `toggleCliApproved` e `updatePolicies` agora persistem via `PATCH /api/settings`. `installCli` usa o endpoint dedicado `POST /api/runtimes/:id/install` (substitui o `setTimeout` simulado); `checkCli` re-consulta o serviço real. Novos `dispatchWorkItem`/`completeWorkItem` chamam as rotas reais. (Observação de processo: o arquivo usa quebras LF; edições via terminal precisaram usar `\n` — algumas substituições com `\r\n` falharam silenciosamente e foram refeitas.)
+- **C1 Org.tsx:** coluna "Aprovada" na tabela de CLIs ligada a `settings.approvedRuntimes` (toggle real, com efeito no backend); políticas do setor agora refletem/salvam `settings.policies` (destrutivos, rede, credenciais); "Workspaces permitidos" lista `allowedWorkspaces` reais. CSS do grid `.cli-row` ajustado de 6 para 7 colunas.
+- **C2:** removida a barra de "Progresso simulado" do `AgentNode.tsx` e do `Inspector.tsx`; Inspector mostra o estado (statusLabels) e o workspace real (`activeProject.path`) em vez do hardcoded `C:\work\atlas`.
+- **C3 Work.tsx:** mover um card para "Em andamento" (doing) com responsável chama `dispatchWorkItem` (sessão real); mover para "Aguardando aprovação" (review) chama `completeWorkItem`. Offline mantém o comportamento local.
+- **C4 App.tsx:** o selo da topbar vira "AMBIENTE REAL · vertice-core" quando `serviceOnline`, e "AMBIENTE DE DEMONSTRAÇÃO" quando offline.
+
+**SYNC-C:** `npm run build` e `npm run lint` sem erros. Validação de integração com o core real: `PATCH /api/settings` altera política (allowNetwork→false) e aprovação; remover a aprovação do powershell fez `POST /api/sessions` desse runtime retornar 403 — prova de que a aprovação de CLI na tela deixou de ser cosmética. TESTE VISUAL NO NAVEGADOR (chrome-devtools) PENDENTE — não disponível nesta sessão; verificar as 5 seções e contraste azul/laranja manualmente.
+
+**Estado real atualizado:** políticas e aprovação de CLIs agora são REAIS ponta a ponta (UI → backend → efeito em sessões). Progresso falso removido da UI. Banner de demonstração honesto conforme conexão.
+
+**Próximo passo:** Bloco D (D1: extrair RUNTIME_CATALOG para manifestos JSON em runtimes/; D2: empacotamento Windows em installers/). Depois Bloco E (fechamento e limpeza de dívidas: package.json "my-app", resíduos de template).

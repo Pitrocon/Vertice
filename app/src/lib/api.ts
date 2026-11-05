@@ -21,6 +21,22 @@ export interface LiveSessionInfo {
   mode: 'pty' | 'pipe'
 }
 
+export interface VerticePolicies {
+  allowDestructiveCommands: boolean
+  allowNetwork: boolean
+  allowCredentials: boolean
+}
+
+export interface VerticeSettings {
+  approvedRuntimes: string[]
+  policies: VerticePolicies
+}
+
+export interface AllowedWorkspace {
+  id: string
+  path: string
+}
+
 export interface WorkspaceSnapshot {
   projects: Project[]
   agents: Agent[]
@@ -28,6 +44,8 @@ export interface WorkspaceSnapshot {
   goals: Goal[]
   workItems: WorkItem[]
   events: ActivityEvent[]
+  settings?: VerticeSettings
+  allowedWorkspaces?: AllowedWorkspace[]
 }
 
 async function get<T>(path: string): Promise<T | null> {
@@ -116,6 +134,26 @@ export const api = {
 
   async patchWorkItem(id: string, fields: Partial<WorkItem>): Promise<WorkspaceSnapshot | null> {
     return request<WorkspaceSnapshot>('PATCH', `/api/work-items/${id}`, fields)
+  },
+
+  async getSettings(): Promise<{ settings: VerticeSettings; allowedWorkspaces: AllowedWorkspace[] } | null> {
+    return get<{ settings: VerticeSettings; allowedWorkspaces: AllowedWorkspace[] }>('/api/settings')
+  },
+
+  async updateSettings(input: { approvedRuntimes?: string[]; policies?: Partial<VerticePolicies> }): Promise<WorkspaceSnapshot | null> {
+    return request<WorkspaceSnapshot>('PATCH', '/api/settings', input)
+  },
+
+  async installRuntime(runtimeId: string): Promise<{ runtime: DetectedRuntime; snapshot: WorkspaceSnapshot } | null> {
+    return request<{ runtime: DetectedRuntime; snapshot: WorkspaceSnapshot }>('POST', `/api/runtimes/${runtimeId}/install`)
+  },
+
+  async dispatchWorkItem(id: string): Promise<{ ok: boolean; sessionId?: string; snapshot: WorkspaceSnapshot } | null> {
+    return request<{ ok: boolean; sessionId?: string; snapshot: WorkspaceSnapshot }>('POST', `/api/work-items/${id}/dispatch`)
+  },
+
+  async completeWorkItem(id: string, input: { result?: string; error?: string }): Promise<{ ok: boolean; snapshot: WorkspaceSnapshot } | null> {
+    return request<{ ok: boolean; snapshot: WorkspaceSnapshot }>('POST', `/api/work-items/${id}/complete`, input)
   },
 
   async createSession(input: { agentId: string; runtimeId: string; cwd: string }): Promise<LiveSessionInfo | null> {

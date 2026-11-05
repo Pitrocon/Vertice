@@ -32,11 +32,6 @@ export function AgentNode({ data, selected }: NodeProps<AgentFlowNode>) {
         <span>{agent.runtime}</span>
         <span>{statusLabels[agent.status]}</span>
       </div>
-      {agent.status === 'working' && (
-        <div className="agent-node__progress" aria-label={`Progresso: ${agent.progress}%`}>
-          <span style={{ width: `${agent.progress}%` }} />
-        </div>
-      )}
       <Handle type="source" position={Position.Bottom} className="agent-handle" />
     </div>
   )

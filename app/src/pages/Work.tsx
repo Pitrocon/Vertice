@@ -5,8 +5,21 @@ import { useWorkspace } from '@/store/workspace'
 import { priorityLabels, workStatusLabels, workStatusOrder, type WorkItem, type WorkPriority, type WorkStatus } from '@/types/agent'
 
 export function WorkPage() {
-  const { agents, goals, workItems, moveWorkItem, addWorkItem, addGoal } = useWorkspace()
+  const { agents, goals, workItems, moveWorkItem, addWorkItem, addGoal, dispatchWorkItem, completeWorkItem, serviceOnline } = useWorkspace()
   const [modal, setModal] = useState<'issue' | 'goal' | null>(null)
+
+  const handleMove = (item: WorkItem, next: WorkStatus) => {
+    // Quando online, a movimentação dispara a execução real correspondente.
+    if (serviceOnline && next === 'doing' && item.assigneeId) {
+      void dispatchWorkItem(item.id)
+      return
+    }
+    if (serviceOnline && next === 'review') {
+      void completeWorkItem(item.id)
+      return
+    }
+    moveWorkItem(item.id, next)
+  }
 
   const goalProgress = (goalId: string) => {
     const items = workItems.filter((item) => item.goalId === goalId)
@@ -48,7 +61,7 @@ export function WorkPage() {
             </header>
             <div className="work-column__body">
               {workItems.filter((item) => item.status === status).map((item) => (
-                <WorkCard key={item.id} item={item} onMove={(next) => moveWorkItem(item.id, next)} agentName={item.assigneeId ? agents.find((a) => a.id === item.assigneeId)?.name : undefined} goalTitle={item.goalId ? goals.find((g) => g.id === item.goalId)?.title : undefined} />
+                <WorkCard key={item.id} item={item} onMove={(next) => handleMove(item, next)} agentName={item.assigneeId ? agents.find((a) => a.id === item.assigneeId)?.name : undefined} goalTitle={item.goalId ? goals.find((g) => g.id === item.goalId)?.title : undefined} />
               ))}
               {workItems.filter((item) => item.status === status).length === 0 && <div className="work-column__empty">Nenhuma tarefa</div>}
             </div>

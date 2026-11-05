@@ -11,7 +11,7 @@ const cliStatusLabels: Record<CliStatus, string> = {
 }
 
 export function OrgPage() {
-  const { serviceOnline, realRuntimes, cliRuntimes, refreshService, installCliReal, terminalLines, liveSessions } = useWorkspace()
+  const { serviceOnline, realRuntimes, cliRuntimes, refreshService, terminalLines, liveSessions, settings, updatePolicies, toggleCliApproved, installCli } = useWorkspace()
   const [checking, setChecking] = useState(false)
 
   const verify = async () => {
@@ -78,8 +78,17 @@ export function OrgPage() {
               <span><span className={`cli-status cli-status--${cli.status}`}><i />{cliStatusLabels[cli.status]}</span></span>
               <span>{cli.version ?? '—'}</span>
               <span>
+                <input
+                  type="checkbox"
+                  aria-label={`Aprovar ${cli.name}`}
+                  checked={Boolean(settings?.approvedRuntimes.includes(cli.id))}
+                  disabled={!serviceOnline}
+                  onChange={() => toggleCliApproved(cli.id)}
+                />
+              </span>
+              <span>
                 {cli.status === 'missing' && serviceOnline && cli.install && (
-                  <button className="button button--primary button--small" onClick={() => installCliReal(cli.id)}><Download size={13} /> Instalar</button>
+                  <button className="button button--primary button--small" onClick={() => installCli(cli.id)}><Download size={13} /> Instalar</button>
                 )}
                 {cli.status === 'missing' && serviceOnline && !cli.install && <small className="cli-manual">manual</small>}
                 {cli.status === 'missing' && !serviceOnline && <small className="cli-manual">—</small>}
@@ -123,9 +132,19 @@ export function OrgPage() {
           <p>Definidas pelo responsável de TI e aplicadas a todas as máquinas da empresa.</p>
         </div>
         <div className="settings-list settings-list--page">
-          <label><span><strong>Aprovação do Gerente sem intermediários</strong><small>O Gerente pode criar e coordenar subagentes dentro do workspace sem pedir confirmação.</small></span><input type="checkbox" defaultChecked /></label>
-          <label><span><strong>Comandos destrutivos exigem confirmação</strong><small>Excluir arquivos, formatar ou apagar dados fora do workspace sempre pede aprovação humana.</small></span><input type="checkbox" defaultChecked /></label>
-          <label><span><strong>Acesso à rede pelos agentes</strong><small>Permitir que os agentes façam chamadas de rede a partir do workspace.</small></span><input type="checkbox" /></label>
+          <label>
+            <span><strong>Comandos destrutivos permitidos</strong><small>Quando desligado, operações destrutivas ficam marcadas como não autorizadas pela política (registro declarativo no backend).</small></span>
+            <input type="checkbox" checked={Boolean(settings?.policies.allowDestructiveCommands)} disabled={!serviceOnline} onChange={(e) => updatePolicies({ allowDestructiveCommands: e.target.checked })} />
+          </label>
+          <label>
+            <span><strong>Acesso à rede pelos agentes</strong><small>Permitir que os agentes façam chamadas de rede a partir do workspace.</small></span>
+            <input type="checkbox" checked={Boolean(settings?.policies.allowNetwork)} disabled={!serviceOnline} onChange={(e) => updatePolicies({ allowNetwork: e.target.checked })} />
+          </label>
+          <label>
+            <span><strong>Uso de credenciais pelos agentes</strong><small>Permitir que os agentes utilizem credenciais armazenadas na máquina.</small></span>
+            <input type="checkbox" checked={Boolean(settings?.policies.allowCredentials)} disabled={!serviceOnline} onChange={(e) => updatePolicies({ allowCredentials: e.target.checked })} />
+          </label>
+          {!serviceOnline && <small className="org-hint">Conecte o serviço local para editar e salvar as políticas.</small>}
         </div>
       </section>
     </div>
@@ -133,14 +152,20 @@ export function OrgPage() {
 }
 
 function WorkspacePolicy() {
-  const { activeProject } = useWorkspace()
+  const { activeProject, allowedWorkspaces, serviceOnline } = useWorkspace()
+  const list = serviceOnline && allowedWorkspaces.length
+    ? allowedWorkspaces
+    : (activeProject ? [{ id: 'ativo', path: activeProject.path }] : [])
   return (
     <div className="workspace-policy">
-      <div className="workspace-policy__row">
-        <FolderLock size={16} />
-        <span><strong>{activeProject?.path}</strong><small>Projeto ativo · leitura, escrita e execução</small></span>
-        <span className="cli-status cli-status--installed"><i /> Permitido</span>
-      </div>
+      {list.map((ws) => (
+        <div key={ws.id} className="workspace-policy__row">
+          <FolderLock size={16} />
+          <span><strong>{ws.path}</strong><small>{ws.path === activeProject?.path ? 'Projeto ativo · ' : ''}leitura, escrita e execução</small></span>
+          <span className="cli-status cli-status--installed"><i /> Permitido</span>
+        </div>
+      ))}
+      {!list.length && <div className="workspace-policy__row"><small>Nenhum workspace permitido configurado.</small></div>}
     </div>
   )
 }

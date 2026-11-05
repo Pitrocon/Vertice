@@ -152,6 +152,7 @@ function OrganogramaView() {
         agents={agents}
         events={events}
         serviceOnline={workspace.serviceOnline}
+        workspacePath={workspace.activeProject?.path}
         hasLiveSession={Boolean(selectedAgent && workspace.liveSessions[selectedAgent.id])}
         onStartSession={() => selectedAgent && workspace.startAgentSession(selectedAgent.id)}
         onStopSession={() => selectedAgent && workspace.stopAgentSession(selectedAgent.id)}

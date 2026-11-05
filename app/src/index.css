@@ -550,7 +550,7 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .org-section__heading h2 { margin: 0 0 4px; font-size: 15px; font-weight: 560; letter-spacing: -.015em; }
 .org-section__heading p { margin: 0; color: var(--text-secondary); font-size: 10px; line-height: 1.5; max-width: 640px; }
 .cli-table { border: 1px solid var(--border-subtle); border-radius: 7px; overflow: hidden; }
-.cli-row { display: grid; grid-template-columns: 1.3fr .8fr .8fr 1fr .5fr 110px; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border-subtle); background: var(--surface); font-size: 11px; }
+.cli-row { display: grid; grid-template-columns: 1.3fr .8fr .8fr 1fr .5fr .6fr 110px; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border-subtle); background: var(--surface); font-size: 11px; }
 .cli-row:last-child { border-bottom: 0; }
 .cli-row--head { background: oklch(0.225 0.009 255); color: var(--text-secondary); font-family: var(--font-mono); font-size: 8px; letter-spacing: .08em; text-transform: uppercase; }
 .cli-row.is-disabled { opacity: .55; }
@@ -599,7 +599,7 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
   .org-layout { grid-template-columns: minmax(0, 1fr); }
   .org-layout .inspector { display: none; }
   .work-board { grid-template-columns: minmax(0, 1fr); }
-  .cli-row { grid-template-columns: 1.2fr .8fr 1fr .5fr 96px; }
+  .cli-row { grid-template-columns: 1.2fr .8fr 1fr .5fr .6fr 96px; }
   .cli-row > span:nth-child(3) { display: none; }
 }
 
@@ -607,8 +607,8 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .demo-banner--online { border-color: oklch(0.72 0.065 155 / .45); background: oklch(0.72 0.065 155 / .05); }
 .demo-banner--online > svg { color: var(--primitive-sage); }
 .demo-banner code { font-family: var(--font-mono); font-size: 10px; color: var(--accent); }
-.cli-row--real { grid-template-columns: 1.3fr .8fr .8fr 1fr .6fr 110px; }
-.cli-row--head { grid-template-columns: 1.3fr .8fr .8fr 1fr .6fr 110px; }
+.cli-row--real { grid-template-columns: 1.3fr .8fr .8fr 1fr .6fr .6fr 110px; }
+.cli-row--head { grid-template-columns: 1.3fr .8fr .8fr 1fr .6fr .6fr 110px; }
 .cli-ok { color: var(--primitive-sage); font-weight: 600; }
 .cli-manual { color: var(--text-secondary); font-family: var(--font-mono); font-size: 8px; }
 .org-hint { margin-top: 10px; color: var(--text-secondary); font-size: 10px; line-height: 1.5; }

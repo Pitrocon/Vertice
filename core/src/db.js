@@ -1,6 +1,7 @@
-import { DatabaseSync } from 'node:sqlite'
+﻿import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const dataDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'data')
@@ -8,7 +9,17 @@ mkdirSync(dataDir, { recursive: true })
 
 const db = new DatabaseSync(join(dataDir, 'vertice.db'))
 
+// Workspace padrao realista e criavel (substitui o antigo C:\work\atlas inexistente).
+// Resolvido em runtime a partir do perfil do usuario, nunca hardcode de um usuario especifico.
+const DEFAULT_WORKSPACE_ROOT = join(homedir(), 'vertice-workspaces')
+const DEFAULT_ATLAS_PATH = join(DEFAULT_WORKSPACE_ROOT, 'atlas')
+const DEFAULT_INTRANET_PATH = join(DEFAULT_WORKSPACE_ROOT, 'intranet')
+
 db.exec(`
+  CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -51,6 +62,14 @@ db.exec(`
     goal_id TEXT,
     priority TEXT NOT NULL DEFAULT 'media'
   );
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS allowed_workspaces (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
@@ -69,9 +88,89 @@ db.exec(`
   );
 `)
 
+// ---------------------------------------------------------------------------
+// Migracoes idempotentes baseadas em meta.schema_version. Nunca apagam dados.
+// ---------------------------------------------------------------------------
+const SCHEMA_VERSION = 3
+
+function getSchemaVersion() {
+  const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()
+  return row ? Number(row.value) : 0
+}
+
+function setSchemaVersion(version) {
+  db.prepare(`
+    INSERT INTO meta (key, value) VALUES ('schema_version', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(String(version))
+}
+
+function columnExists(table, column) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all()
+  return cols.some((c) => c.name === column)
+}
+
+const DEFAULT_SETTINGS = {
+  approvedRuntimes: ['claude', 'codex', 'kimi', 'powershell'],
+  policies: { allowDestructiveCommands: false, allowNetwork: true, allowCredentials: false },
+}
+
+function seedSettingsAndWorkspaces() {
+  const settingsCount = db.prepare('SELECT COUNT(*) AS count FROM settings').get().count
+  if (settingsCount === 0) {
+    const stmt = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)')
+    stmt.run('approvedRuntimes', JSON.stringify(DEFAULT_SETTINGS.approvedRuntimes))
+    stmt.run('policies', JSON.stringify(DEFAULT_SETTINGS.policies))
+  }
+  const wsCount = db.prepare('SELECT COUNT(*) AS count FROM allowed_workspaces').get().count
+  if (wsCount === 0) {
+    const stmt = db.prepare('INSERT INTO allowed_workspaces (id, path) VALUES (?, ?)')
+    stmt.run('ws-atlas', DEFAULT_ATLAS_PATH)
+    stmt.run('ws-intranet', DEFAULT_INTRANET_PATH)
+  }
+}
+
+function runMigrations() {
+  const current = getSchemaVersion()
+
+  // v1 -> introducao das tabelas settings e allowed_workspaces + seed.
+  if (current < 1) {
+    seedSettingsAndWorkspaces()
+  }
+
+  // v2 -> corrigir projetos legados que ainda apontam para C:\work\* inexistente.
+  if (current < 2) {
+    const legacy = db.prepare("SELECT id, path FROM projects WHERE path LIKE 'C:\\work\\%'").all()
+    for (const proj of legacy) {
+      const fixed = proj.id === 'proj-intranet' ? DEFAULT_INTRANET_PATH : DEFAULT_ATLAS_PATH
+      db.prepare('UPDATE projects SET path = ? WHERE id = ?').run(fixed, proj.id)
+    }
+  }
+
+  // v3 (Bloco B1) -> expandir work_items para orquestracao real (sem perda de dados).
+  if (current < 3) {
+    const newCols = [
+      ['parent_task_id', 'TEXT'],
+      ['depends_on', 'TEXT'],
+      ['result', 'TEXT'],
+      ['error', 'TEXT'],
+      ['created_by', 'TEXT'],
+      ['created_at', 'TEXT'],
+      ['updated_at', 'TEXT'],
+    ]
+    for (const [name, type] of newCols) {
+      if (!columnExists('work_items', name)) {
+        db.exec(`ALTER TABLE work_items ADD COLUMN ${name} ${type}`)
+      }
+    }
+  }
+
+  if (current < SCHEMA_VERSION) setSchemaVersion(SCHEMA_VERSION)
+}
+
 const INITIAL_PROJECTS = [
-  { id: 'proj-atlas', name: 'Atlas', path: 'C:\\work\\atlas', description: 'Projeto principal do Vértice — orquestrador local de agentes.', active: 1 },
-  { id: 'proj-intranet', name: 'Intranet', path: 'C:\\work\\intranet', description: 'Portal interno da empresa e distribuição da ferramenta.', active: 0 },
+  { id: 'proj-atlas', name: 'Atlas', path: DEFAULT_ATLAS_PATH, description: 'Projeto principal do Vértice — orquestrador local de agentes.', active: 1 },
+  { id: 'proj-intranet', name: 'Intranet', path: DEFAULT_INTRANET_PATH, description: 'Portal interno da empresa e distribuição da ferramenta.', active: 0 },
 ]
 
 const INITIAL_AGENTS = [
@@ -141,6 +240,8 @@ export function seedInitialData(force = false) {
       DELETE FROM connections;
       DELETE FROM goals;
       DELETE FROM work_items;
+      DELETE FROM settings;
+      DELETE FROM allowed_workspaces;
     `)
   }
   const projectCount = db.prepare('SELECT COUNT(*) AS count FROM projects').get().count
@@ -168,9 +269,11 @@ export function seedInitialData(force = false) {
     const stmt = db.prepare('INSERT INTO work_items (id, title, status, assignee_id, goal_id, priority) VALUES (?, ?, ?, ?, ?, ?)')
     for (const w of INITIAL_WORK_ITEMS) stmt.run(w.id, w.title, w.status, w.assigneeId, w.goalId, w.priority)
   }
+  seedSettingsAndWorkspaces()
 }
 
 seedInitialData(false)
+runMigrations()
 
 function mapProject(row) {
   return { id: row.id, name: row.name, path: row.path, description: row.description, active: Boolean(row.active) }
@@ -203,6 +306,13 @@ function mapWorkItem(row) {
     id: row.id, title: row.title, status: row.status, priority: row.priority,
     ...(row.assignee_id ? { assigneeId: row.assignee_id } : {}),
     ...(row.goal_id ? { goalId: row.goal_id } : {}),
+    ...(row.parent_task_id ? { parentTaskId: row.parent_task_id } : {}),
+    ...(row.depends_on ? { dependsOn: JSON.parse(row.depends_on) } : {}),
+    ...(row.result ? { result: row.result } : {}),
+    ...(row.error ? { error: row.error } : {}),
+    ...(row.created_by ? { createdBy: row.created_by } : {}),
+    ...(row.created_at ? { createdAt: row.created_at } : {}),
+    ...(row.updated_at ? { updatedAt: row.updated_at } : {}),
   }
 }
 
@@ -216,6 +326,44 @@ function mapEvent(row) {
   }
 }
 
+// --- Settings e allowed_workspaces ---------------------------------------
+
+function parseSettingValue(raw) {
+  try { return JSON.parse(raw) } catch { return raw }
+}
+
+export function getSetting(key) {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key)
+  return row ? parseSettingValue(row.value) : null
+}
+
+export function getSettings() {
+  const rows = db.prepare('SELECT key, value FROM settings').all()
+  const out = {}
+  for (const row of rows) out[row.key] = parseSettingValue(row.value)
+  return out
+}
+
+export function setSetting(key, value) {
+  const serialized = typeof value === 'string' ? value : JSON.stringify(value)
+  db.prepare(`
+    INSERT INTO settings (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, serialized)
+}
+
+export function listAllowedWorkspaces() {
+  return db.prepare('SELECT id, path FROM allowed_workspaces').all().map((row) => ({ id: row.id, path: row.path }))
+}
+
+export function addAllowedWorkspace({ id, path }) {
+  db.prepare('INSERT OR REPLACE INTO allowed_workspaces (id, path) VALUES (?, ?)').run(id, path)
+}
+
+export function removeAllowedWorkspace(id) {
+  db.prepare('DELETE FROM allowed_workspaces WHERE id = ?').run(id)
+}
+
 export function getWorkspaceSnapshot() {
   return {
     projects: db.prepare('SELECT * FROM projects').all().map(mapProject),
@@ -224,6 +372,8 @@ export function getWorkspaceSnapshot() {
     goals: db.prepare('SELECT * FROM goals').all().map(mapGoal),
     workItems: db.prepare('SELECT * FROM work_items').all().map(mapWorkItem),
     events: db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT 20').all().map(mapEvent),
+    settings: getSettings(),
+    allowedWorkspaces: listAllowedWorkspaces(),
   }
 }
 
@@ -287,17 +437,25 @@ export function createGoal({ id, title, description }) {
     .run(id, title, description ?? '')
 }
 
-export function createWorkItem({ id, title, status, assigneeId, goalId, priority }) {
-  db.prepare('INSERT INTO work_items (id, title, status, assignee_id, goal_id, priority) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(id, title, status ?? 'todo', assigneeId ?? null, goalId ?? null, priority ?? 'media')
+export function createWorkItem({ id, title, status, assigneeId, goalId, priority, parentTaskId, dependsOn, createdBy }) {
+  const now = new Date().toISOString()
+  db.prepare(`
+    INSERT INTO work_items (id, title, status, assignee_id, goal_id, priority, parent_task_id, depends_on, created_by, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, title, status ?? 'todo', assigneeId ?? null, goalId ?? null, priority ?? 'media',
+    parentTaskId ?? null,
+    dependsOn ? JSON.stringify(dependsOn) : null,
+    createdBy ?? null, now, now
+  )
 }
 
-export function patchWorkItem(id, { status, assigneeId, goalId, priority, title }) {
+export function patchWorkItem(id, { status, assigneeId, goalId, priority, title, result, error }) {
   const current = db.prepare('SELECT * FROM work_items WHERE id = ?').get(id)
   if (!current) return false
   db.prepare(`
     UPDATE work_items
-    SET title = ?, status = ?, assignee_id = ?, goal_id = ?, priority = ?
+    SET title = ?, status = ?, assignee_id = ?, goal_id = ?, priority = ?, result = ?, error = ?, updated_at = ?
     WHERE id = ?
   `).run(
     title ?? current.title,
@@ -305,6 +463,9 @@ export function patchWorkItem(id, { status, assigneeId, goalId, priority, title 
     assigneeId !== undefined ? assigneeId : current.assignee_id,
     goalId !== undefined ? goalId : current.goal_id,
     priority ?? current.priority,
+    result !== undefined ? result : current.result,
+    error !== undefined ? error : current.error,
+    new Date().toISOString(),
     id
   )
   return true
@@ -332,3 +493,6 @@ export function recordEvent(agentId, message, type = 'system') {
 export function listEvents() {
   return db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT 50').all()
 }
+
+
+

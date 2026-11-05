@@ -8,6 +8,7 @@ interface InspectorProps {
   agents: Agent[]
   events: ActivityEvent[]
   serviceOnline: boolean
+  workspacePath?: string
   hasLiveSession: boolean
   onStartSession: () => void
   onStopSession: () => void
@@ -19,7 +20,7 @@ interface InspectorProps {
   mobileOpen: boolean
 }
 
-export function Inspector({ agent, agents, events, serviceOnline, hasLiveSession, onStartSession, onStopSession, onOpenTerminal, onTogglePause, onRemove, onSelect, onClose, mobileOpen }: InspectorProps) {
+export function Inspector({ agent, agents, events, serviceOnline, workspacePath, hasLiveSession, onStartSession, onStopSession, onOpenTerminal, onTogglePause, onRemove, onSelect, onClose, mobileOpen }: InspectorProps) {
   const [tab, setTab] = useState<'overview' | 'prompt' | 'activity'>('overview')
   const parentAgent = agent?.createdBy ? agents.find((item) => item.id === agent.createdBy) : undefined
 
@@ -46,14 +47,13 @@ export function Inspector({ agent, agents, events, serviceOnline, hasLiveSession
               <>
                 <div className="detail-group">
                   <div className="section-label">TAREFA ATUAL</div>
-                  <p className="current-task">{agent.task}</p>
-                  <div className="task-progress"><span style={{ width: `${agent.progress}%` }} /></div>
-                  <div className="progress-meta"><span>Progresso simulado</span><strong>{agent.progress}%</strong></div>
+                  <p className="current-task">{agent.task || 'Sem tarefa ativa'}</p>
+                  <div className="progress-meta"><span>Estado</span><strong>{statusLabels[agent.status]}</strong></div>
                 </div>
                 <dl className="detail-list">
                   <div><dt>Runtime</dt><dd>{agent.runtime}</dd></div>
                   <div><dt>Modelo</dt><dd>{agent.model}</dd></div>
-                  <div><dt>Workspace</dt><dd>C:\work\atlas</dd></div>
+                  <div><dt>Workspace</dt><dd>{workspacePath ?? 'workspace do projeto ativo'}</dd></div>
                   <div><dt>Origem</dt><dd>{agent.createdBy ? `Criado por ${parentAgent?.name ?? 'Gerente'}` : 'Agente principal'}</dd></div>
                 </dl>
                 <div className="detail-group">
@@ -74,7 +74,7 @@ export function Inspector({ agent, agents, events, serviceOnline, hasLiveSession
               <div className="prompt-view">
                 <div className="section-label">INSTRUÇÃO DE SISTEMA</div>
                 <p>{agent.prompt}</p>
-                <span>O prompt será editável na versão com execução real.</span>
+                <span>Instrução enviada ao agente ao despachar uma tarefa.</span>
               </div>
             )}
             {tab === 'activity' && <EventList events={events} agents={agents} onSelect={onSelect} />}

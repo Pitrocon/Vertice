@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
-import { api, connectEvents, stripAnsi, type DetectedRuntime, type LiveSessionInfo, type WorkspaceSnapshot } from '@/lib/api'
+import { api, connectEvents, stripAnsi, type DetectedRuntime, type LiveSessionInfo, type WorkspaceSnapshot, type VerticeSettings, type AllowedWorkspace } from '@/lib/api'
 import {
   initialAgents, initialConnections, initialEvents, initialTerminalLines,
   initialGoals, initialWorkItems, initialProjects, initialCliRuntimes,
@@ -67,6 +67,11 @@ interface WorkspaceValue {
   checkCli: (id: string) => void
   installCli: (id: string) => void
   toggleCliApproved: (id: string) => void
+  settings: VerticeSettings | null
+  allowedWorkspaces: AllowedWorkspace[]
+  updatePolicies: (policies: Partial<VerticeSettings['policies']>) => void
+  dispatchWorkItem: (id: string) => Promise<void>
+  completeWorkItem: (id: string, result?: string) => Promise<void>
   serviceOnline: boolean
   realRuntimes: DetectedRuntime[] | null
   liveSessions: Record<string, LiveSessionInfo>
@@ -101,6 +106,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [serviceOnline, setServiceOnline] = useState(false)
   const [realRuntimes, setRealRuntimes] = useState<DetectedRuntime[] | null>(null)
   const [liveSessions, setLiveSessions] = useState<Record<string, LiveSessionInfo>>({})
+  const [settings, setSettings] = useState<VerticeSettings | null>(null)
+  const [allowedWorkspaces, setAllowedWorkspaces] = useState<AllowedWorkspace[]>([])
   const wsRef = useRef<WebSocket | null>(null)
 
   const applySnapshot = useCallback((snapshot: WorkspaceSnapshot | null) => {
@@ -111,6 +118,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setGoals(snapshot.goals)
     setWorkItems(snapshot.workItems)
     if (snapshot.events?.length) setEvents(snapshot.events)
+    if (snapshot.settings) setSettings(snapshot.settings)
+    if (snapshot.allowedWorkspaces) setAllowedWorkspaces(snapshot.allowedWorkspaces)
   }, [setProjects, setAgents, setConnections, setGoals, setWorkItems])
 
   const appendSessionOutput = useCallback((agentId: string, data: string) => {
@@ -371,24 +380,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, [setProjects, projects, serviceOnline, applySnapshot])
 
   const checkCli = useCallback((id: string) => {
-    setCliRuntimes((current) => current.map((cli) => (cli.id === id ? { ...cli, status: 'checking' as const } : cli)))
-    window.setTimeout(() => {
-      setCliRuntimes((current) => current.map((cli) => {
-        if (cli.id !== id) return cli
-        return { ...cli, status: cli.version ? 'installed' as const : 'missing' as const }
-      }))
-    }, 900)
-  }, [])
+    // Verificacao real: re-consulta o serviço local. Offline mantém o aviso de demonstração.
+    if (serviceOnline) { void refreshService(); return }
+    setCliRuntimes((current) => current.map((cli) => (cli.id === id ? { ...cli, status: cli.version ? 'installed' as const : 'missing' as const } : cli)))
+  }, [serviceOnline, refreshService])
 
-  const installCli = useCallback((id: string) => {
-    const cli = cliRuntimes.find((item) => item.id === id)
-    if (!cli) return
-    setCliRuntimes((current) => current.map((item) => (item.id === id ? { ...item, status: 'installing' as const } : item)))
-    window.setTimeout(() => {
-      setCliRuntimes((current) => current.map((item) => (item.id === id ? { ...item, status: 'installed' as const, version: item.version ?? '1.0.0' } : item)))
-      toast.success(`${cli.name} instalado (demonstração)`, { description: 'A instalação real será executada pelo serviço local.' })
-    }, 2400)
-  }, [cliRuntimes])
+  const installCli = useCallback(async (id: string) => {
+    if (serviceOnline) {
+      const res = await api.installRuntime(id)
+      if (res) { applySnapshot(res.snapshot); await refreshService(); toast.success(`${res.runtime?.name ?? id} instalado — versão ${res.runtime?.version ?? 'verificada'}`) }
+      else toast.error('Falha na instalação pelo serviço local')
+      return
+    }
+    toast.error('Serviço local offline — não é possível instalar de forma real')
+  }, [serviceOnline, applySnapshot, refreshService])
 
   const startAgentSession = useCallback(async (agentId: string) => {
     const agent = agents.find((item) => item.id === agentId)
@@ -442,7 +447,30 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const toggleCliApproved = useCallback((id: string) => {
     setCliRuntimes((current) => current.map((cli) => (cli.id === id ? { ...cli, approved: !cli.approved } : cli)))
-  }, [])
+    if (serviceOnline) {
+      const current = settings?.approvedRuntimes ?? []
+      const next = current.includes(id) ? current.filter((r) => r !== id) : [...current, id]
+      void api.updateSettings({ approvedRuntimes: next }).then(applySnapshot)
+    }
+  }, [serviceOnline, settings, applySnapshot])
+
+  const updatePolicies = useCallback((policies: Partial<VerticeSettings['policies']>) => {
+    if (!serviceOnline) { toast.error('Serviço local offline — políticas não podem ser salvas'); return }
+    void api.updateSettings({ policies }).then(applySnapshot)
+  }, [serviceOnline, applySnapshot])
+
+  const dispatchWorkItem = useCallback(async (id: string) => {
+    if (!serviceOnline) { toast.error('Serviço local offline — inicie o vertice-core'); return }
+    const res = await api.dispatchWorkItem(id)
+    if (res?.ok) { applySnapshot(res.snapshot); toast.success('Tarefa despachada para a sessão real do agente') }
+    else toast.error('Não foi possível despachar a tarefa (verifique responsável, runtime aprovado e workspace)')
+  }, [serviceOnline, applySnapshot])
+
+  const completeWorkItem = useCallback(async (id: string, result?: string) => {
+    if (!serviceOnline) { toast.error('Serviço local offline'); return }
+    const res = await api.completeWorkItem(id, { result })
+    if (res?.ok) { applySnapshot(res.snapshot); toast.success('Tarefa movida para aprovação') }
+  }, [serviceOnline, applySnapshot])
 
   const value: WorkspaceValue = {
     agents, connections, events, selectedId, modal, terminalOpen, terminalExpanded, terminalLines,
@@ -452,6 +480,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     runCommand, clearTerminal, resetDemo,
     moveWorkItem, addWorkItem, addGoal, addProject, setActiveProject,
     checkCli, installCli, toggleCliApproved,
+    settings, allowedWorkspaces, updatePolicies, dispatchWorkItem, completeWorkItem,
     serviceOnline, realRuntimes, liveSessions, refreshService,
     startAgentSession, stopAgentSession, installCliReal,
   }

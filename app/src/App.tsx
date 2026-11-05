@@ -59,7 +59,7 @@ function Shell() {
         <div className="topbar-divider" />
         <div className="topbar-context"><span>PROJETO</span><strong>{activeProject?.name ?? '—'}</strong><small>{activeProject?.path}</small></div>
         <div className="topbar-spacer" />
-        <span className="local-badge"><i /> AMBIENTE DE DEMONSTRAÇÃO</span>
+        <span className={`local-badge ${workspace.serviceOnline ? 'local-badge--online' : ''}`}><i /> {workspace.serviceOnline ? 'AMBIENTE REAL · vertice-core' : 'AMBIENTE DE DEMONSTRAÇÃO'}</span>
         <button className="command-trigger" onClick={() => setModal('commands')}><Command size={14} /><span>Buscar ou comandar</span><kbd>Ctrl K</kbd></button>
       </header>
 

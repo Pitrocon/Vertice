@@ -40,18 +40,18 @@
 ## Fase 2 — Confinamento de Workspace e Políticas Reais no Backend
 > **Objetivo:** Garantir tecnicamente no `core/` que nenhuma sessão ou operação ocorra fora dos diretórios autorizados e que políticas de TI sejam respeitadas.
 
-- [ ] **2.1** Criar tabela/configuração de `settings` e `allowed_workspaces` no `core` (com suporte a criar o diretório do projeto na máquina, caso o usuário autorize, ou selecionar uma pasta existente válida).
-- [ ] **2.2** Criar módulo `core/src/workspace.js` com `resolveInside(root, targetPath)` e `assertAllowedCwd(cwd)` (validação case-insensitive no Windows, resolução de symlinks/junctions, bloqueio de `..` e caminhos fora do workspace com erro HTTP `403`, removendo o fallback silencioso para `homedir()`).
-- [ ] **2.3** Persistir no backend a aprovação de CLIs (`approved`) e as políticas da página `CLI's` (`Org.tsx`), recusando `POST /api/sessions` para runtimes não aprovados.
-- [ ] **2.4** Mover a instalação de CLIs para um endpoint dedicado `POST /api/runtimes/:id/install` que só executa comandos oficiais do catálogo aprovado e revalida a versão ao terminar.
+- [x] **2.1** Criar tabela/configuração de `settings` e `allowed_workspaces` no `core` (com suporte a criar o diretório do projeto na máquina, caso o usuário autorize, ou selecionar uma pasta existente válida).
+- [x] **2.2** Criar módulo `core/src/workspace.js` com `resolveInside(root, targetPath)` e `assertAllowedCwd(cwd)` (validação case-insensitive no Windows, resolução de symlinks/junctions, bloqueio de `..` e caminhos fora do workspace com erro HTTP `403`, removendo o fallback silencioso para `homedir()`).
+- [x] **2.3** Persistir no backend a aprovação de CLIs (`approved`) e as políticas da página `CLI's` (`Org.tsx`), recusando `POST /api/sessions` para runtimes não aprovados.
+- [x] **2.4** Mover a instalação de CLIs para um endpoint dedicado `POST /api/runtimes/:id/install` que só executa comandos oficiais do catálogo aprovado e revalida a versão ao terminar.
 
 ---
 
 ## Fase 3 — Fila de Tarefas e Execução Real pelos Agentes
 > **Objetivo:** Conectar o quadro `Work` (issues/metas) às sessões reais dos agentes.
 
-- [ ] **3.1** Vincular `WorkItem` à execução do agente: ao mover uma tarefa para `Em andamento` (`doing`) com um agente atribuído, iniciar/usar a sessão real do agente no diretório do projeto ativo e enviar a instrução da tarefa.
-- [ ] **3.2** Sincronizar o estado real do agente (`working`, `idle`, `paused`) no card e no nó do Organograma de acordo com a sessão viva e a tarefa ativa, removendo porcentagens de progresso falsas.
+- [x] **3.1** Vincular `WorkItem` à execução do agente: ao mover uma tarefa para `Em andamento` (`doing`) com um agente atribuído, iniciar/usar a sessão real do agente no diretório do projeto ativo e enviar a instrução da tarefa.
+- [x] **3.2** Sincronizar o estado real do agente (`working`, `idle`, `paused`) no card e no nó do Organograma de acordo com a sessão viva e a tarefa ativa, removendo porcentagens de progresso falsas.
 - [ ] **3.3** Permitir anexar o log/saída da sessão ao histórico da tarefa e mover para `Aguardando aprovação` (`review`) quando concluída.
 
 ---
@@ -59,9 +59,9 @@
 ## Fase 4 — Orquestração Real pelo Agente Gerente
 > **Objetivo:** Substituir a delegação simulada (`delegateToManager`) por criação e coordenação real de subagentes dentro do workspace.
 
-- [ ] **4.1** Implementar fluxo onde o Gerente recebe um objetivo, decompõe em subtarefas/subagentes reais (usando um runtime instalado e aprovado, ex.: Claude Code) e registra os subagentes e tarefas no SQLite.
-- [ ] **4.2** Fazer as conexões do Organograma (`source -> target`) determinarem quem pode delegar tarefas para quem no despachante do `core`.
-- [ ] **4.3** Remover o banner de "AMBIENTE DE DEMONSTRAÇÃO" quando o `core` estiver conectado e operando 100% sobre dados e sessões reais.
+- [x] **4.1** Implementar fluxo onde o Gerente recebe um objetivo, decompõe em subtarefas/subagentes reais (usando um runtime instalado e aprovado, ex.: Claude Code) e registra os subagentes e tarefas no SQLite.
+- [x] **4.2** Fazer as conexões do Organograma (`source -> target`) determinarem quem pode delegar tarefas para quem no despachante do `core`.
+- [x] **4.3** Remover o banner de "AMBIENTE DE DEMONSTRAÇÃO" quando o `core` estiver conectado e operando 100% sobre dados e sessões reais.
 
 ---
 
