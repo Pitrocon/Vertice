@@ -1,0 +1,12 @@
+{
+  "id": "lmstudio",
+  "name": "LM Studio",
+  "kind": "Modelo local",
+  "command": "lms",
+  "versionArgs": ["version"],
+  "sessionArgs": [],
+  "install": null,
+  "http": "http://localhost:1234/v1/models",
+  "authenticates": false,
+  "order": 8
+}

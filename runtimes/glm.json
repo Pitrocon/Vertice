@@ -1,0 +1,12 @@
+{
+  "id": "glm",
+  "name": "GLM CLI (Z.ai)",
+  "kind": "CLI de IA",
+  "command": "zai",
+  "versionArgs": ["--version"],
+  "sessionArgs": [],
+  "install": "npm install -g @guizmo-ai/zai-cli",
+  "http": null,
+  "authenticates": true,
+  "order": 4
+}

@@ -1,0 +1,12 @@
+{
+  "id": "ollama",
+  "name": "Ollama",
+  "kind": "Modelo local",
+  "command": "ollama",
+  "versionArgs": ["--version"],
+  "sessionArgs": [],
+  "install": "winget install Ollama.Ollama",
+  "http": "http://localhost:11434/api/tags",
+  "authenticates": false,
+  "order": 7
+}

@@ -1,21 +1,81 @@
 import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 
-// Catálogo de runtimes suportados. Cada entrada descreve como detectar,
-// versionar, instalar e iniciar uma sessão interativa da CLI.
-export const RUNTIME_CATALOG = [
-  { id: 'claude',      name: 'Claude Code',     kind: 'CLI de IA',    command: 'claude',     versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @anthropic-ai/claude-code' },
-  { id: 'codex',       name: 'Codex CLI',       kind: 'CLI de IA',    command: 'codex',      versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @openai/codex' },
-  { id: 'kimi',        name: 'Kimi CLI',        kind: 'CLI de IA',    command: 'kimi',       versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @moonshot-ai/kimi-code' },
-  { id: 'glm',         name: 'GLM CLI (Z.ai)',  kind: 'CLI de IA',    command: 'zai',        versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @guizmo-ai/zai-cli' },
-  { id: 'antigravity', name: 'Antigravity CLI', kind: 'CLI de IA',    command: 'agy',        versionArgs: ['--version'], sessionArgs: [], install: 'irm https://antigravity.google/cli/install.ps1 | iex' },
-  { id: 'opencode',    name: 'OpenCode',        kind: 'CLI de IA',    command: 'opencode',   versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g opencode-ai' },
-  { id: 'ollama',      name: 'Ollama',          kind: 'Modelo local', command: 'ollama',     versionArgs: ['--version'], sessionArgs: [], http: 'http://localhost:11434/api/tags', install: 'winget install Ollama.Ollama' },
-  { id: 'lmstudio',    name: 'LM Studio',       kind: 'Modelo local', command: 'lms',        versionArgs: ['version'],   sessionArgs: [], http: 'http://localhost:1234/v1/models', install: null },
-  { id: 'powershell',  name: 'PowerShell',      kind: 'Shell',        command: 'powershell', versionArgs: ['--version'], sessionArgs: ['-NoLogo'], install: null },
+// Diretório de manifestos declarativos: vertice/runtimes/<id>.json
+// (a partir de core/src/runtimes.js sobe dois níveis até a raiz do projeto).
+// No modo empacotado (Electron), o processo main aponta VERTICE_RUNTIMES_DIR
+// para a pasta de manifestos embarcada nos resources do app.
+const MANIFESTS_DIR = process.env.VERTICE_RUNTIMES_DIR
+  ? process.env.VERTICE_RUNTIMES_DIR
+  : join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'runtimes')
+
+// Fallback embutido — usado apenas se a pasta de manifestos não existir ou
+// estiver vazia (ex.: build empacotado antes de copiar os assets). Mantém a
+// detecção honesta funcionando em qualquer cenário.
+const FALLBACK_CATALOG = [
+  { id: 'claude',      name: 'Claude Code',     kind: 'CLI de IA',    command: 'claude',     versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @anthropic-ai/claude-code', http: null, authenticates: true,  order: 1 },
+  { id: 'codex',       name: 'Codex CLI',       kind: 'CLI de IA',    command: 'codex',      versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @openai/codex',          http: null, authenticates: true,  order: 2 },
+  { id: 'kimi',        name: 'Kimi CLI',        kind: 'CLI de IA',    command: 'kimi',       versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @moonshot-ai/kimi-code',  http: null, authenticates: true,  order: 3 },
+  { id: 'glm',         name: 'GLM CLI (Z.ai)',  kind: 'CLI de IA',    command: 'zai',        versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @guizmo-ai/zai-cli',      http: null, authenticates: true,  order: 4 },
+  { id: 'antigravity', name: 'Antigravity CLI', kind: 'CLI de IA',    command: 'agy',        versionArgs: ['--version'], sessionArgs: [], install: 'irm https://antigravity.google/cli/install.ps1 | iex', http: null, authenticates: true, order: 5 },
+  { id: 'opencode',    name: 'OpenCode',        kind: 'CLI de IA',    command: 'opencode',   versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g opencode-ai',            http: null, authenticates: true,  order: 6 },
+  { id: 'ollama',      name: 'Ollama',          kind: 'Modelo local', command: 'ollama',     versionArgs: ['--version'], sessionArgs: [], install: 'winget install Ollama.Ollama',          http: 'http://localhost:11434/api/tags', authenticates: false, order: 7 },
+  { id: 'lmstudio',    name: 'LM Studio',       kind: 'Modelo local', command: 'lms',        versionArgs: ['version'],   sessionArgs: [], install: null,                                    http: 'http://localhost:1234/v1/models', authenticates: false, order: 8 },
+  { id: 'powershell',  name: 'PowerShell',      kind: 'Shell',        command: 'powershell', versionArgs: ['--version'], sessionArgs: ['-NoLogo'], install: null,                           http: null, authenticates: false, order: 9 },
 ]
+
+const REQUIRED_FIELDS = ['id', 'name', 'kind', 'command', 'versionArgs', 'sessionArgs']
+
+// Lê e valida os manifestos declarativos. Entradas malformadas são ignoradas
+// com aviso; se nenhum manifesto válido for encontrado, usa o fallback embutido.
+function loadCatalog() {
+  if (!existsSync(MANIFESTS_DIR)) {
+    console.warn(`[runtimes] Pasta de manifestos ausente (${MANIFESTS_DIR}); usando catálogo embutido.`)
+    return [...FALLBACK_CATALOG]
+  }
+
+  const files = readdirSync(MANIFESTS_DIR).filter((f) => f.toLowerCase().endsWith('.json'))
+  const catalog = []
+  for (const file of files) {
+    try {
+      const manifest = JSON.parse(readFileSync(join(MANIFESTS_DIR, file), 'utf8'))
+      const missing = REQUIRED_FIELDS.filter((field) => manifest[field] === undefined || manifest[field] === null)
+      if (missing.length) {
+        console.warn(`[runtimes] Manifesto "${file}" ignorado — campos ausentes: ${missing.join(', ')}.`)
+        continue
+      }
+      catalog.push({
+        id: manifest.id,
+        name: manifest.name,
+        kind: manifest.kind,
+        command: manifest.command,
+        versionArgs: manifest.versionArgs,
+        sessionArgs: manifest.sessionArgs,
+        install: manifest.install ?? null,
+        http: manifest.http ?? null,
+        authenticates: manifest.authenticates ?? false,
+        order: typeof manifest.order === 'number' ? manifest.order : 999,
+      })
+    } catch (error) {
+      console.warn(`[runtimes] Falha ao ler manifesto "${file}": ${error.message}`)
+    }
+  }
+
+  if (!catalog.length) {
+    console.warn('[runtimes] Nenhum manifesto válido encontrado; usando catálogo embutido.')
+    return [...FALLBACK_CATALOG]
+  }
+
+  return catalog.sort((a, b) => a.order - b.order)
+}
+
+// Catálogo de runtimes suportados, carregado dos manifestos declarativos em
+// vertice/runtimes/<id>.json. Cada entrada descreve como detectar, versionar,
+// instalar e iniciar uma sessão interativa da CLI.
+export const RUNTIME_CATALOG = loadCatalog()
 
 const EXTRA_BIN_DIRS = [
   process.env.APPDATA ? join(process.env.APPDATA, 'npm') : null,

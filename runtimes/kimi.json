@@ -1,0 +1,12 @@
+{
+  "id": "kimi",
+  "name": "Kimi CLI",
+  "kind": "CLI de IA",
+  "command": "kimi",
+  "versionArgs": ["--version"],
+  "sessionArgs": [],
+  "install": "npm install -g @moonshot-ai/kimi-code",
+  "http": null,
+  "authenticates": true,
+  "order": 3
+}

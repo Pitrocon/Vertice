@@ -1,0 +1,12 @@
+{
+  "id": "claude",
+  "name": "Claude Code",
+  "kind": "CLI de IA",
+  "command": "claude",
+  "versionArgs": ["--version"],
+  "sessionArgs": [],
+  "install": "npm install -g @anthropic-ai/claude-code",
+  "http": null,
+  "authenticates": true,
+  "order": 1
+}

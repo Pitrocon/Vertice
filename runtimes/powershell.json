@@ -1,0 +1,12 @@
+{
+  "id": "powershell",
+  "name": "PowerShell",
+  "kind": "Shell",
+  "command": "powershell",
+  "versionArgs": ["--version"],
+  "sessionArgs": ["-NoLogo"],
+  "install": null,
+  "http": null,
+  "authenticates": false,
+  "order": 9
+}

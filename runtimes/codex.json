@@ -1,0 +1,12 @@
+{
+  "id": "codex",
+  "name": "Codex CLI",
+  "kind": "CLI de IA",
+  "command": "codex",
+  "versionArgs": ["--version"],
+  "sessionArgs": [],
+  "install": "npm install -g @openai/codex",
+  "http": null,
+  "authenticates": true,
+  "order": 2
+}

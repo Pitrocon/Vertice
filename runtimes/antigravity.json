@@ -1,0 +1,12 @@
+{
+  "id": "antigravity",
+  "name": "Antigravity CLI",
+  "kind": "CLI de IA",
+  "command": "agy",
+  "versionArgs": ["--version"],
+  "sessionArgs": [],
+  "install": "irm https://antigravity.google/cli/install.ps1 | iex",
+  "http": null,
+  "authenticates": true,
+  "order": 5
+}

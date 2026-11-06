@@ -1,0 +1,12 @@
+{
+  "id": "opencode",
+  "name": "OpenCode",
+  "kind": "CLI de IA",
+  "command": "opencode",
+  "versionArgs": ["--version"],
+  "sessionArgs": [],
+  "install": "npm install -g opencode-ai",
+  "http": null,
+  "authenticates": true,
+  "order": 6
+}
