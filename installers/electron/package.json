@@ -1,0 +1,64 @@
+{
+  "name": "vertice-desktop",
+  "productName": "Vértice",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Empacotamento desktop Windows do Vértice (Electron): sobe o vertice-core e abre o app.",
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "rebuild": "electron-rebuild -f -w ../../core -m ../../core",
+    "dist": "electron-builder --win --x64",
+    "pack": "electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron": "45.2.1",
+    "@electron/rebuild": "4.0.1",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.vertice.desktop",
+    "productName": "Vértice",
+    "artifactName": "Vertice-Setup-${version}.${ext}",
+    "directories": {
+      "output": "out"
+    },
+    "files": [
+      "main.js",
+      "preload.js"
+    ],
+    "extraResources": [
+      {
+        "from": "../../core",
+        "to": "core",
+        "filter": ["**/*", "!data/**", "!node_modules/.cache/**"]
+      },
+      {
+        "from": "../../app/dist",
+        "to": "app/dist"
+      },
+      {
+        "from": "../../runtimes",
+        "to": "runtimes",
+        "filter": ["*.json"]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Vértice"
+    }
+  }
+}

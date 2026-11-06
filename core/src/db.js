@@ -4,7 +4,12 @@ import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
-const dataDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'data')
+// Diretório de dados do SQLite. No modo empacotado (Electron), o processo main
+// aponta VERTICE_DATA_DIR para app.getPath('userData') para que o banco fique
+// em %APPDATA%\Vertice e não dentro dos arquivos de programa (read-only).
+const dataDir = process.env.VERTICE_DATA_DIR
+  ? process.env.VERTICE_DATA_DIR
+  : join(dirname(fileURLToPath(import.meta.url)), '..', 'data')
 mkdirSync(dataDir, { recursive: true })
 
 const db = new DatabaseSync(join(dataDir, 'vertice.db'))
