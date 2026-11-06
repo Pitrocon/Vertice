@@ -112,6 +112,17 @@ export const api = {
     return request<WorkspaceSnapshot>('POST', '/api/agents/batch', input)
   },
 
+  // Orquestração real (Bloco B5): o core cria subagentes + conexões + tarefas
+  // reais a partir do objetivo, validando runtime aprovado e limite de agentes.
+  async orchestratorDelegate(input: {
+    managerId: string
+    objective: string
+    team: { name: string; role: string; runtime: string; model: string; prompt: string }[]
+    maxAgents?: number
+  }): Promise<{ ok: boolean; created: { agentId: string; taskId: string }[]; snapshot: WorkspaceSnapshot } | null> {
+    return request<{ ok: boolean; created: { agentId: string; taskId: string }[]; snapshot: WorkspaceSnapshot }>('POST', '/api/orchestrator/delegate', input)
+  },
+
   async patchAgent(id: string, fields: Partial<Agent>): Promise<WorkspaceSnapshot | null> {
     return request<WorkspaceSnapshot>('PATCH', `/api/agents/${id}`, fields)
   },

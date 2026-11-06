@@ -89,9 +89,17 @@ function OrganogramaView() {
     if (connection.source && connection.target) addConnection(connection.source, connection.target)
   }
 
+  const hasLiveSessionForTerminal = Boolean(activeTerminalAgent && workspace.liveSessions[activeTerminalAgent.id])
   const currentTerminalLines: TerminalLine[] = activeTerminalAgent ? terminalLines[activeTerminalAgent.id] ?? [
-    { id: `welcome-${activeTerminalAgent.id}`, type: 'muted' as const, text: `Terminal visual de ${activeTerminalAgent.name} · ${activeTerminalAgent.runtime}` },
-    { id: `mode-${activeTerminalAgent.id}`, type: 'muted' as const, text: 'Modo demonstração · nenhum processo real em execução.' },
+    { id: `welcome-${activeTerminalAgent.id}`, type: 'muted' as const, text: `Terminal de ${activeTerminalAgent.name} · ${activeTerminalAgent.runtime}` },
+    {
+      id: `mode-${activeTerminalAgent.id}`, type: 'muted' as const,
+      text: hasLiveSessionForTerminal
+        ? 'Sessão real conectada · a saída do processo aparece aqui.'
+        : workspace.serviceOnline
+          ? 'Sem sessão ativa · inicie uma sessão real no Inspector ou despache uma tarefa no Work.'
+          : 'Serviço local offline · inicie o vertice-core para abrir sessões reais.',
+    },
   ] : []
 
   return (
@@ -135,6 +143,7 @@ function OrganogramaView() {
           <TerminalPanel
             agents={agents}
             activeAgent={activeTerminalAgent}
+            workspacePath={workspace.activeProject?.path}
             lines={currentTerminalLines}
             expanded={terminalExpanded}
             onSelectAgent={(id) => setSelectedId(id)}

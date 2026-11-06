@@ -99,8 +99,8 @@ function Shell() {
         <span>v0.2 / estrutura</span>
       </footer>
 
-      {modal === 'create' && <CreateAgentDialog agents={agents} onClose={() => setModal(null)} onCreate={createAgent} />}
-      {modal === 'manager' && <ManagerDialog onClose={() => setModal(null)} onDelegate={delegateToManager} />}
+      {modal === 'create' && <CreateAgentDialog agents={agents} serviceOnline={workspace.serviceOnline} scopePath={activeProject?.path} onClose={() => setModal(null)} onCreate={createAgent} />}
+      {modal === 'manager' && <ManagerDialog serviceOnline={workspace.serviceOnline} onClose={() => setModal(null)} onDelegate={delegateToManager} />}
       {modal === 'commands' && (
         <CommandPalette
           onClose={() => setModal(null)}
@@ -117,9 +117,9 @@ function Shell() {
           <div className="settings-list">
             <label><span><strong>Grade de alinhamento</strong><small>Exibe pontos e encaixa os nós na grade.</small></span><input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} /></label>
             <label><span><strong>Minimapa</strong><small>Mostra a visão geral e permite navegar.</small></span><input type="checkbox" checked={showMinimap} onChange={(e) => setShowMinimap(e.target.checked)} /></label>
-            <div className="settings-scope"><span>PERMISSÃO DO GERENTE</span><strong>Autonomia total no workspace</strong><small>Escopo definido para este protótipo: {activeProject?.path}</small></div>
+            <div className="settings-scope"><span>PERMISSÃO DO GERENTE</span><strong>Autonomia total no workspace</strong><small>Escopo confinado ao workspace do projeto ativo: {activeProject?.path}</small></div>
           </div>
-          <footer className="modal-footer"><button className="button button--secondary" onClick={resetDemo}>Restaurar demonstração</button><button className="button button--primary" onClick={() => setModal(null)}>Concluir</button></footer>
+          <footer className="modal-footer"><button className="button button--secondary" onClick={resetDemo}>Restaurar dados iniciais</button><button className="button button--primary" onClick={() => setModal(null)}>Concluir</button></footer>
         </Modal>
       )}
       <Toaster position="bottom-center" toastOptions={{ className: 'vertice-toast' }} />

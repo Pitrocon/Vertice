@@ -12,9 +12,10 @@ interface TerminalPanelProps {
   onClear: () => void
   onToggleExpanded: () => void
   onClose: () => void
+  workspacePath?: string
 }
 
-export function TerminalPanel({ agents, activeAgent, lines, expanded, onSelectAgent, onCommand, onClear, onToggleExpanded, onClose }: TerminalPanelProps) {
+export function TerminalPanel({ agents, activeAgent, lines, expanded, workspacePath, onSelectAgent, onCommand, onClear, onToggleExpanded, onClose }: TerminalPanelProps) {
   const [command, setCommand] = useState('')
   const outputRef = useRef<HTMLDivElement>(null)
 
@@ -47,8 +48,8 @@ export function TerminalPanel({ agents, activeAgent, lines, expanded, onSelectAg
         {lines.length === 0 && <div className="terminal-line terminal-line--muted">Terminal limpo. Digite /help para ver os comandos da demonstração.</div>}
       </div>
       <form className="terminal-input" onSubmit={submit}>
-        <label htmlFor="terminal-command">PS C:\work\atlas&gt;</label>
-        <input id="terminal-command" value={command} onChange={(e) => setCommand(e.target.value)} placeholder="Digite /help para explorar a simulação" autoComplete="off" />
+        <label htmlFor="terminal-command" title={workspacePath}>PS {workspacePath ?? 'workspace'}&gt;</label>
+        <input id="terminal-command" value={command} onChange={(e) => setCommand(e.target.value)} placeholder="Digite /help para ver os comandos" autoComplete="off" />
         <kbd>ENTER</kbd>
       </form>
     </section>

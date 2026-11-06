@@ -157,7 +157,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       wsRef.current = connectEvents((event) => {
         if (event.type === 'output') {
           appendSessionOutput(String(event.agentId), String(event.data ?? ''))
-        } else if (event.type === 'workspace-updated' && event.snapshot) {
+        } else if ((event.type === 'workspace-updated' || event.type === 'task-updated') && event.snapshot) {
           applySnapshot(event.snapshot as WorkspaceSnapshot)
         } else if (event.type === 'exit' || event.type === 'session-ended') {
           setLiveSessions((current) => {
@@ -228,7 +228,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
     const templates = [
       { name: 'Estrategista', role: 'Estratégia e decomposição', runtime: 'Claude Code', model: 'claude-sonnet', task: 'Decompondo o objetivo em entregas', prompt: `Decomponha este objetivo em entregas coordenáveis: ${objective}` },
-      { name: 'Analista', role: 'Análise e contexto', runtime: 'Ollama', model: 'qwen3:14b', task: 'Analisando contexto e restrições', prompt: `Analise contexto, dados e restrições para: ${objective}` },
+      { name: 'Analista', role: 'Análise e contexto', runtime: 'Kimi CLI', model: 'kimi-k2', task: 'Analisando contexto e restrições', prompt: `Analise contexto, dados e restrições para: ${objective}` },
       { name: 'Executor', role: 'Execução da entrega', runtime: 'Codex CLI', model: 'gpt-codex', task: 'Preparando o plano de execução', prompt: `Execute a entrega principal e reporte o resultado para: ${objective}` },
     ]
     const startIndex = agents.filter((agent) => agent.kind === 'worker').length
@@ -241,33 +241,60 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       id: crypto.randomUUID(), source: manager.id, target: agent.id, label: 'delega', active: agent.status === 'working',
     }))
 
-    setAgents((currentAgents) => [
-      ...currentAgents.map((agent) => agent.id === manager.id ? { ...agent, status: 'working' as const, task: objective, progress: 12 } : agent),
-      ...newAgents,
-    ])
-    setConnections((current) => [...current, ...newConnections])
-    setTerminalLines((current) => ({
-      ...current, [manager.id]: [...(current[manager.id] ?? []),
-        { id: crypto.randomUUID(), type: 'command', text: `vertice delegate "${objective}"` },
-        { id: crypto.randomUUID(), type: 'success', text: `✓ Equipe simulada criada: ${newAgents.map((agent) => agent.name).join(', ')}` },
-        { id: crypto.randomUUID(), type: 'muted', text: 'Nenhum processo externo foi iniciado.' },
-      ],
-    }))
-    const eventMessage = `Equipe de ${newAgents.length} agentes criada para novo objetivo`
-    addEvent(manager.id, eventMessage, 'delegate')
     if (serviceOnline) {
-      void api.batchDelegate({
-        agents: newAgents,
-        connections: newConnections,
-        managerUpdate: { id: manager.id, status: 'working', task: objective, progress: 12 },
-        eventMessage,
-      }).then(applySnapshot)
+      // ONLINE: orquestração REAL. O core cria subagentes + conexões + tarefas
+      // reais (validando runtime aprovado e limite). As sessões só iniciam quando
+      // cada tarefa é despachada no Work — por isso a mensagem é honesta.
+      void api.orchestratorDelegate({
+        managerId: manager.id,
+        objective,
+        team: templates.map((template) => ({
+          name: uniqueName(template.name), role: template.role,
+          runtime: template.runtime, model: template.model, prompt: template.prompt,
+        })),
+      }).then((res) => {
+        if (!res || !res.ok) {
+          setTerminalLines((current) => ({
+            ...current, [manager.id]: [...(current[manager.id] ?? []),
+              { id: crypto.randomUUID(), type: 'command', text: `vertice delegate "${objective}"` },
+              { id: crypto.randomUUID(), type: 'muted', text: 'Falha ao delegar: verifique runtimes aprovados e o limite de agentes nas CLIs.' },
+            ],
+          }))
+          toast.error('Não foi possível criar a equipe (ver aprovações de CLI)')
+          return
+        }
+        applySnapshot(res.snapshot)
+        setTerminalLines((current) => ({
+          ...current, [manager.id]: [...(current[manager.id] ?? []),
+            { id: crypto.randomUUID(), type: 'command', text: `vertice delegate "${objective}"` },
+            { id: crypto.randomUUID(), type: 'success', text: `✓ ${res.created.length} subagente(s) real(is) criado(s) e registrado(s) no workspace.` },
+            { id: crypto.randomUUID(), type: 'muted', text: 'As sessões iniciam ao despachar cada tarefa no quadro Work.' },
+          ],
+        }))
+        addEvent(manager.id, `Gerente criou ${res.created.length} subagente(s) real(is) para: ${objective}`, 'delegate')
+        toast.success(`Gerente criou ${res.created.length} subagente(s) real(is)`)
+      })
+    } else {
+      // OFFLINE: demonstração visual, claramente rotulada como simulação.
+      setAgents((currentAgents) => [
+        ...currentAgents.map((agent) => agent.id === manager.id ? { ...agent, status: 'working' as const, task: objective, progress: 12 } : agent),
+        ...newAgents,
+      ])
+      setConnections((current) => [...current, ...newConnections])
+      setTerminalLines((current) => ({
+        ...current, [manager.id]: [...(current[manager.id] ?? []),
+          { id: crypto.randomUUID(), type: 'command', text: `vertice delegate "${objective}"` },
+          { id: crypto.randomUUID(), type: 'success', text: `✓ Equipe simulada criada: ${newAgents.map((agent) => agent.name).join(', ')}` },
+          { id: crypto.randomUUID(), type: 'muted', text: 'Demonstração offline · nenhum processo externo foi iniciado. Inicie o vertice-core para orquestração real.' },
+        ],
+      }))
+      addEvent(manager.id, `Equipe simulada de ${newAgents.length} agentes criada (offline)`, 'delegate')
+      toast.success('Equipe simulada criada (offline)')
     }
     setSelectedId(manager.id)
     setModal(null)
     setTerminalOpen(true)
-    toast.success('Gerente criou uma equipe de 3 agentes')
-  }, [agents, setAgents, setConnections, addEvent, serviceOnline, applySnapshot])
+  }, [agents, setAgents, setConnections, addEvent, setTerminalLines, setSelectedId, setModal, setTerminalOpen, serviceOnline, applySnapshot])
 
   const togglePause = useCallback((id: string) => {
     const target = agents.find((agent) => agent.id === id)

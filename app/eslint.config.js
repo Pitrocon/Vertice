@@ -20,4 +20,15 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    // Componentes shadcn/ui são gerados por ferramenta e seguem o padrão de
+    // exportar variantes/constantes junto do componente (ex.: badgeVariants),
+    // o que conflita com regras voltadas ao código de produto escrito à mão.
+    // Não editamos esses primitivos manualmente.
+    files: ['src/components/ui/**/*.{ts,tsx}'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+      'react-hooks/purity': 'off',
+    },
+  },
 ])

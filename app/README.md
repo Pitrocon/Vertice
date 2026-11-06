@@ -1,73 +1,47 @@
-# React + TypeScript + Vite
+# Vértice — Frontend (app)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Interface do Vértice (Local Agent OS). React 19 + TypeScript + Vite 7 + Tailwind
+e `@xyflow/react` para o Organograma. Fala com o serviço local `vertice-core`
+(`http://localhost:7845`) por REST + WebSocket.
 
-Currently, two official plugins are available:
+## Rodar em desenvolvimento
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```powershell
+npm install
+npm run dev     # http://localhost:3000
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+O `vertice-core` precisa estar rodando para operar sobre dados/sessões reais
+(`cd ..\core; npm start`). Sem o core, o app mostra o banner honesto de
+"AMBIENTE DE DEMONSTRAÇÃO".
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Scripts
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+| Script | O que faz |
+|---|---|
+| `npm run dev` | Servidor de desenvolvimento Vite na porta 3000. |
+| `npm run build` | Type-check (`tsc -b`) + build de produção em `dist/` (`base: './'`). |
+| `npm run lint` | ESLint em todo o projeto. |
+| `npm run preview` | Serve o build de produção localmente. |
+
+## Estrutura
+
 ```
+src/
+  components/   Componentes (inclui ui/ do shadcn)
+  pages/        Telas: Agentes, Work, Projects, Organograma, CLI's (Org)
+  store/        Estado central (workspace.tsx) e sincronização com o core
+  lib/          Cliente HTTP/WS (api.ts) apontando para localhost:7845
+  types/        Definições de tipos
+```
+
+## Build para empacotamento
+
+O `dist/` gerado aqui é embarcado pelo instalador Electron
+(`vertice/installers/electron`). Como o build usa `base: './'`, ele carrega
+corretamente via `file://` dentro do app empacotado.
+
+## Identidade visual
+
+Base escura; **azul** para ações/navegação, **laranja** para atividade/alertas.
+Linguagem de gestão na UI (cargos, tarefas, metas); o terminal é modo avançado.

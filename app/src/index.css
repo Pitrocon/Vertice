@@ -279,7 +279,7 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .terminal-line--success { color: var(--primitive-sage); }
 .terminal-line--muted { color: var(--text-secondary); }
 .terminal-input { min-height: 40px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-top: 1px solid var(--border-subtle); font-family: var(--font-mono); }
-.terminal-input label { color: var(--accent-warm); font-size: 9px; white-space: nowrap; }
+.terminal-input label { color: var(--accent-warm); font-size: 9px; white-space: nowrap; max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
 .terminal-input input { flex: 1; min-width: 0; height: 38px; border: 0; outline: 0; background: transparent; color: var(--text-primary); font-size: 10px; }
 .terminal-input input::placeholder { color: oklch(0.48 0.015 65); }
 .terminal-input:focus-within { box-shadow: inset 0 1px var(--accent-warm); }
@@ -489,8 +489,9 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .agent-card h3 { margin: 0; font-size: 14px; font-weight: 560; letter-spacing: -.015em; }
 .agent-card__role { margin: 3px 0 0; color: var(--text-secondary); font-size: 10px; }
 .agent-card__task { margin: 11px 0 0; font-size: 11px; line-height: 1.5; color: oklch(0.8 0.015 255); min-height: 32px; }
-.agent-card__progress { height: 2px; margin-top: 9px; background: var(--border-subtle); border-radius: 2px; overflow: hidden; }
-.agent-card__progress span { display: block; height: 100%; background: var(--accent-warm); }
+.agent-card__activity { display: flex; align-items: center; gap: 6px; margin-top: 9px; font-size: 10px; color: var(--accent-warm); font-family: var(--font-mono); }
+.agent-card__activity i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-warm); animation: vertice-pulse 1.4s ease-in-out infinite; }
+@keyframes vertice-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 .agent-card > footer { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border-subtle); }
 .agent-card > footer > small { font-family: var(--font-mono); font-size: 8px; color: var(--text-secondary); }
 .agent-card__actions { display: flex; gap: 2px; }

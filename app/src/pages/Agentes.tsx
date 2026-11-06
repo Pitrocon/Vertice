@@ -70,7 +70,7 @@ function AgentCard({ agent, onOpen, onTogglePause, onRemove }: { agent: Agent; o
       <p className="agent-card__role">{agent.role}</p>
       <p className="agent-card__task">{agent.task}</p>
       {agent.status === 'working' && (
-        <div className="agent-card__progress"><span style={{ width: `${agent.progress}%` }} /></div>
+        <div className="agent-card__activity"><i /> Em execução</div>
       )}
       <footer>
         <small>{agent.runtime}</small>

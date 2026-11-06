@@ -68,6 +68,7 @@ export function OrgPage() {
             <span>Tipo</span>
             <span>Estado</span>
             <span>Versão</span>
+            <span>Aprovada</span>
             <span>Ação</span>
           </div>
           {rows.map((cli) => (

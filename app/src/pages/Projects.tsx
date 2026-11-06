@@ -4,7 +4,7 @@ import { Modal } from '@/components/Modal'
 import { useWorkspace } from '@/store/workspace'
 
 export function ProjectsPage() {
-  const { projects, agents, workItems, setActiveProject, addProject } = useWorkspace()
+  const { projects, agents, workItems, serviceOnline, setActiveProject, addProject } = useWorkspace()
   const [modalOpen, setModalOpen] = useState(false)
 
   return (
@@ -39,7 +39,7 @@ export function ProjectsPage() {
         ))}
       </section>
 
-      <p className="page-note">Nesta fase, a troca de projeto é visual: equipe e tarefas continuam sendo as da demonstração. O isolamento real por projeto chega com o serviço local.</p>
+      <p className="page-note">{serviceOnline ? 'A troca de projeto é persistida no serviço local; as sessões dos agentes rodam confinadas ao workspace do projeto ativo.' : 'Offline: a troca de projeto é apenas visual (demonstração). Inicie o vertice-core para persistência e isolamento reais por projeto.'}</p>
 
       {modalOpen && <NewProjectDialog onClose={() => setModalOpen(false)} onCreate={addProject} />}
     </div>
@@ -48,7 +48,7 @@ export function ProjectsPage() {
 
 function NewProjectDialog({ onClose, onCreate }: { onClose: () => void; onCreate: (input: { name: string; path: string; description: string }) => void }) {
   const [name, setName] = useState('')
-  const [path, setPath] = useState('C:\\work\\')
+  const [path, setPath] = useState('')
   const [description, setDescription] = useState('')
   const [submitted, setSubmitted] = useState(false)
 
@@ -65,7 +65,7 @@ function NewProjectDialog({ onClose, onCreate }: { onClose: () => void; onCreate
       <form onSubmit={submit} className="agent-form">
         <div className="form-grid">
           <label>Nome<input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex.: Suporte" aria-invalid={submitted && !name.trim()} />{submitted && !name.trim() && <small className="field-error">Informe um nome.</small>}</label>
-          <label>Workspace<input value={path} onChange={(e) => setPath(e.target.value)} placeholder="C:\work\suporte" aria-invalid={submitted && !path.trim()} />{submitted && !path.trim() && <small className="field-error">Informe o diretório.</small>}</label>
+          <label>Workspace<input value={path} onChange={(e) => setPath(e.target.value)} placeholder="%USERPROFILE%\vertice-workspaces\suporte" aria-invalid={submitted && !path.trim()} />{submitted && !path.trim() && <small className="field-error">Informe o diretório.</small>}</label>
         </div>
         <label className="prompt-field">Descrição<textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="O que esta equipe vai entregar neste projeto?" /></label>
         <footer className="modal-footer"><button className="button button--secondary" type="button" onClick={onClose}>Cancelar</button><button className="button button--primary" type="submit"><Plus size={15} /> Criar projeto</button></footer>
