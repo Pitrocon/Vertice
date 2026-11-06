@@ -40,7 +40,24 @@ $afterDelete = Invoke-RestMethod "$Base/api/agents/smoke-agent-db" -Method Delet
 if ($afterDelete.agents | Where-Object id -eq 'smoke-agent-db') { Fail 'agente nao removido do SQLite' }
 Ok 'agente removido do SQLite'
 
-$body = @{ agentId = 'smoke-test'; runtimeId = 'powershell'; cwd = (Get-Location).Path } | ConvertTo-Json
+# Confinamento: o backend deve recusar (403) cwd fora do workspace permitido.
+function Expect-403($label, $payload) {
+  try {
+    Invoke-RestMethod "$Base/api/sessions" -Method Post -ContentType 'application/json' -Body ($payload | ConvertTo-Json) | Out-Null
+    Fail "$label deveria retornar 403, mas a sessao foi criada"
+  } catch {
+    $status = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+    if ($status -ne 403) { Fail "$label retornou HTTP $status (esperado 403)" }
+    Ok "$label bloqueado com 403"
+  }
+}
+Expect-403 'cwd fora do workspace (C:\Windows)' @{ agentId = 'smoke-test'; runtimeId = 'powershell'; cwd = 'C:\Windows' }
+Expect-403 'cwd com traversal (..)' @{ agentId = 'smoke-test'; runtimeId = 'powershell'; cwd = ((($ws.allowedWorkspaces)[0].path) + '\..\..') }
+
+# Sessao valida: usa o primeiro workspace permitido (nao o diretorio atual do script).
+$allowed = ($ws.allowedWorkspaces)[0].path
+if (-not $allowed) { Fail 'nenhum workspace permitido configurado no core' }
+$body = @{ agentId = 'smoke-test'; runtimeId = 'powershell'; cwd = $allowed } | ConvertTo-Json
 $session = (Invoke-RestMethod "$Base/api/sessions" -Method Post -ContentType 'application/json' -Body $body).session
 if (-not $session.id) { Fail 'sessao nao criada' }
 Ok "sessao criada: modo $($session.mode) ($($session.cwd))"
