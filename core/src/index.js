@@ -2,12 +2,14 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { execFile } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
 import express from 'express'
 import { WebSocketServer } from 'ws'
 import { detectRuntimes, resolveCommand, RUNTIME_CATALOG } from './runtimes.js'
 import { startSession, writeToSession, resizeSession, killSession, listActiveSessions } from './sessions.js'
 import { assertAllowedCwd, WorkspaceError } from './workspace.js'
-import { configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem } from './orchestrator.js'
+import { configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName } from './orchestrator.js'
 import {
   listSessions, listEvents, recordEvent,
   getWorkspaceSnapshot, seedInitialData,
@@ -250,7 +252,7 @@ app.post('/api/work-items/:id/complete', async (req, res) => {
 // B5: Gerente real cria subagentes + conexoes + tarefas a partir de um objetivo.
 // Espera { managerId, objective, team: [{ name, role, runtime, model, prompt }], maxAgents }.
 app.post('/api/orchestrator/delegate', (req, res) => {
-  const { managerId = 'gerente', objective, team = [], maxAgents = 6 } = req.body ?? {}
+  const { managerId = 'gerente', objective, team = [], maxAgents = 12 } = req.body ?? {}
   if (!objective || typeof objective !== 'string') {
     return res.status(400).json({ error: 'objective é obrigatório' })
   }
@@ -260,13 +262,15 @@ app.post('/api/orchestrator/delegate', (req, res) => {
 
   // Validacao: runtime de cada subagente precisa estar aprovado; respeitar limite.
   const approved = getSetting('approvedRuntimes') ?? []
-  const nameToId = { 'Claude Code': 'claude', 'Codex CLI': 'codex', 'Kimi CLI': 'kimi', 'GLM CLI (Z.ai)': 'glm', 'Antigravity CLI': 'antigravity', OpenCode: 'opencode', Ollama: 'ollama', 'LM Studio': 'lmstudio', PowerShell: 'powershell' }
   const currentWorkers = snapshot.agents.filter((a) => a.kind === 'worker').length
   if (currentWorkers + team.length > maxAgents) {
     return res.status(400).json({ error: `Limite de ${maxAgents} agentes excedido.` })
   }
   for (const member of team) {
-    const rid = nameToId[member.runtime] ?? 'powershell'
+    const rid = runtimeIdFromName(member.runtime)
+    if (!rid) {
+      return res.status(400).json({ error: `Runtime "${member.runtime}" do subagente ${member.name} não existe no catálogo.` })
+    }
     if (!approved.includes(rid)) {
       return res.status(403).json({ error: `Runtime "${member.runtime}" do subagente ${member.name} não está aprovado.` })
     }
@@ -373,10 +377,26 @@ wss.on('connection', (socket) => {
 })
 
 configureOrchestrator({ broadcast })
-recordEvent(null, 'Serviço local do Vértice iniciado', 'system')
 
-server.listen(PORT, () => {
-  console.log(`[vertice-core] ouvindo em http://localhost:${PORT} (ws em /ws)`)
-})
+// Inicia o servidor HTTP+WS. Exportado para o processo main do Electron poder
+// subir o core in-process; também é chamado automaticamente no modo standalone
+// (node src/index.js) via a checagem de entrypoint abaixo.
+export function startCore({ port = PORT } = {}) {
+  recordEvent(null, 'Serviço local do Vértice iniciado', 'system')
+  return new Promise((resolve) => {
+    server.listen(port, () => {
+      console.log(`[vertice-core] ouvindo em http://localhost:${port} (ws em /ws)`)
+      resolve(server)
+    })
+  })
+}
+
+export { server, PORT }
+
+// Auto-start no modo standalone (node src/index.js), mas não quando importado.
+const isMainEntry = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])
+if (isMainEntry) {
+  startCore()
+}
 
 

@@ -30,8 +30,16 @@ export function configureOrchestrator({ broadcast }) {
   if (typeof broadcast === 'function') broadcastFn = broadcast
 }
 
+// Fonte única do mapeamento nome humano -> id do catálogo. Aceita também o
+// próprio id (ex.: "glm"). Retorna null se o runtime não for conhecido.
+export function runtimeIdFromName(name) {
+  if (typeof name !== 'string') return null
+  if (RUNTIME_NAME_TO_ID[name]) return RUNTIME_NAME_TO_ID[name]
+  return RUNTIME_CATALOG.some((r) => r.id === name) ? name : null
+}
+
 function runtimeIdForAgent(agent) {
-  return RUNTIME_NAME_TO_ID[agent.runtime] ?? 'powershell'
+  return runtimeIdFromName(agent.runtime) ?? 'powershell'
 }
 
 function activeProjectPath(snapshot) {
