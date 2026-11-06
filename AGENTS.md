@@ -8,8 +8,8 @@ Referência de produto: Paperclip.ing (modelo "gerenciar uma equipe", não "oper
 ```
 app/          Frontend — React 19 + TS + Vite 7 + React Flow (@xyflow/react)
 core/         Serviço local — Express + WebSocket (porta 7845) + node-pty + node:sqlite
-runtimes/     (futuro) manifestos declarativos das CLIs
-installers/   (futuro) empacotamento para a intranet
+runtimes/     manifestos declarativos das CLIs (um JSON por runtime; ver runtimes/README.md)
+installers/   empacotamento desktop Windows (Electron em installers/electron/)
 docs/         decisões e contexto (ler alinhamento.md primeiro)
 .agents/skills/  skills do projeto para agentes de IA (índice em SKILLS.md)
 memory.md     MEMÓRIA VIVA: histórico completo e contexto (LEITURA E ATUALIZAÇÃO OBRIGATÓRIA)
@@ -33,10 +33,18 @@ cd app  && npm install && npm run dev   # frontend
 - Instalação guiada de CLIs (Claude, Codex, Kimi, GLM/Z.ai, Antigravity, OpenCode; Ollama via winget)
 - Persistência completa em SQLite (`core/data/vertice.db`): projetos, agentes, conexões, metas, tarefas (`work_items`), sessões e eventos, sincronizados em tempo real via REST + WebSocket
 
-## O que ainda é simulado
+- Confinamento de workspace no backend (`core/src/workspace.js`): cwd fora do workspace permitido → HTTP 403, sem fallback para `homedir()`
+- Aprovação de CLIs e políticas da página CLI's persistidas em `settings`; runtime não aprovado não inicia sessão (403)
+- Instalação de CLIs via `POST /api/runtimes/:id/install` (só comando oficial do catálogo + revalida a versão)
+- Catálogo de runtimes em manifestos declarativos `runtimes/<id>.json`
+- Orquestração: `POST /api/orchestrator/delegate` cria subagentes + conexões + tarefas reais; `dispatch`/`complete` ligam tarefas do Work a sessões reais; conexões do organograma definem quem pode delegar
+- Empacotamento: scaffold Electron em `installers/electron/` (o `.exe` ainda precisa ser gerado numa máquina com Build Tools)
 
-- Estados/progresso dos agentes; delegação do Gerente ainda cria equipe de modelo sem abrir processos reais (embora já salve no SQLite)
-- Confinamento técnico de workspace no backend e políticas da página CLI's (checkboxes sem efeito)
+## O que ainda NÃO é automático / simulado
+
+- Detecção automática de conclusão de tarefa (B3): preparada, mas exige CLI de IA autenticada; hoje a conclusão é manual (mover para review/done)
+- Modo offline (core desligado): o app mostra o banner "AMBIENTE DE DEMONSTRAÇÃO" e opera com dados locais simulados
+- Confinamento é por caminho (cwd), não por sandbox de SO: um processo de CLI já iniciado pode acessar o disco conforme as permissões do usuário Windows (ver F2 em `tasks-agentes.md`)
 
 ## Regras do projeto
 
@@ -48,9 +56,10 @@ cd app  && npm install && npm run dev   # frontend
 
 ## Próximos passos (roadmap)
 
-1. Sincronizar agentes/tarefas com o SQLite do core (substituir localStorage)
-2. Gerente criar subagentes reais (spawn de sessão por subagente, confinado ao workspace)
-3. Fila de tarefas ligando Work (issues) às sessões dos agentes
-4. Confinamento de caminhos ao workspace configurado no core
-5. Empacotamento (Electron ou instalador) + distribuição na intranet
-6. Atualização de manifestos de CLI via git
+Itens 1 a 5 do roadmap original (persistência SQLite, subagentes reais, fila de tarefas, confinamento, empacotamento) estão implementados. Pendentes:
+
+1. Gerar e validar o instalador Electron (`npm run dist`) numa máquina Windows com Build Tools e testar em máquina limpa
+2. B3: detecção automática de conclusão de tarefas (exige login das CLIs; ver F1)
+3. Autenticação das CLIs com segredos no Windows Credential Manager (F1)
+4. Confinamento de processo em nível de SO (F2)
+5. Atualização de manifestos de CLI via git

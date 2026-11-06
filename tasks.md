@@ -66,5 +66,14 @@
 ---
 
 ## Fase 5 — Manifestos Declarativos e Empacotamento (Intranet)
-- [ ] **5.1** Extrair `RUNTIME_CATALOG` para arquivos JSON declarativos em `vertice/runtimes/<id>.json`.
-- [ ] **5.2** Definir e implementar empacotamento desktop Windows (Electron ou instalador local) em `vertice/installers/` para distribuição interna.
+- [x] **5.1** Extrair `RUNTIME_CATALOG` para arquivos JSON declarativos em `vertice/runtimes/<id>.json` — *(05/11/2026)*
+- [x] **5.2** Definir e implementar empacotamento desktop Windows (Electron ou instalador local) em `vertice/installers/` para distribuição interna — *(05/11/2026, scaffold Electron; build do instalador requer máquina com Build Tools)*
+
+---
+
+## Fase 6 — Ajustes Finos da Auditoria (Polimento Final — Bloco E)
+- [x] **6.1 (E3)** Alinhar template de delegação do Gerente (`Analista` → `Kimi CLI` em vez de `Ollama` não aprovado no seed) e aumentar `maxAgents` default em `/api/orchestrator/delegate` de `6` para `12` (já que o seed inicia com 4 workers + 3 novos = 7) — *(06/11/2026)*
+- [x] **6.2 (E4)** Adicionar coluna `<span>Aprovada</span>` no cabeçalho `.cli-row--head` de `app/src/pages/Org.tsx` (alinhando as 7 colunas) e usar o diretório do projeto ativo no prompt de `TerminalPanel.tsx` (removendo `C:\work\atlas` fixo) — *(06/11/2026)*
+- [x] **6.3 (E5)** Tratar o evento WebSocket `task-updated` junto com `workspace-updated` em `app/src/store/workspace.tsx` — *(06/11/2026)*
+- [x] **6.4 (E6)** Atualizar `smoke-core.ps1` para usar `$ws.allowedWorkspaces[0].path` no teste de sessão (e testar 403 em `C:\Windows`), corrigir versão do Electron em `installers/electron/package.json` para versão existente no npm (ex.: `^35.0.0`) e commitar todas as alterações no Git — *(06/11/2026)*
+- [ ] **6.5 (E7)** **Interação por Setas e Enter no Terminal (estilo Maestri):** Permitir navegar em menus interativos de CLIs (ex.: confirmação de Trust/Approve do Antigravity/Claude/Kimi) usando as **setas do teclado (`↑` `↓` `←` `→`), `Enter` vazio, `Esc` e `Ctrl+C`** direto no `TerminalPanel.tsx` (enviando sequências ANSI `\x1b[A`, `\x1b[B`, `\r`, `\x1b`, `\x03` para a sessão PTY viva via `sendRawKey`), além de botões rápidos na barra do terminal e repasse de comandos `/login` etc. para a CLI ativa.

@@ -173,31 +173,68 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
 
 ## Bloco D — Manifestos e Empacotamento (Fase 5) · paralelo desde o início
 
-- [ ] **D1** (PKG) — Extrair o `RUNTIME_CATALOG` de `core/src/runtimes.js` para manifestos declarativos
+- [x] **D1** (PKG) — Extrair o `RUNTIME_CATALOG` de `core/src/runtimes.js` para manifestos declarativos
   `vertice/runtimes/<id>.json` (comando de instalação, verificação, autenticação, `sessionArgs`);
-  `runtimes.js` passa a ler os manifestos. Não quebrar a detecção atual.
-  - **Aceite:** a detecção continua funcionando lendo os JSON; adicionar uma CLI = criar um arquivo.
+  `runtimes.js` passa a ler os manifestos. Não quebrar a detecção atual. — *(05/11/2026)*
+  - **Aceite:** a detecção continua funcionando lendo os JSON; adicionar uma CLI = criar um arquivo. ✓
 
-- [ ] **D2** (PKG) — Definir e implementar o empacotamento desktop Windows (Electron ou instalador
+- [x] **D2** (PKG) — Definir e implementar o empacotamento desktop Windows (Electron ou instalador
   local) em `vertice/installers/`, com rebuild dos módulos nativos (`node-pty`, `node:sqlite`) e
-  inicialização do core + app juntos.
-  - **Aceite:** artefato instalável que sobe o core e abre o app.
-  - **Demo:** instalar numa máquina limpa da intranet e abrir o Vértice.
+  inicialização do core + app juntos. — *(05/11/2026, Electron)*
+  - **Aceite:** artefato instalável que sobe o core e abre o app. ✓ scaffold Electron pronto (`installers/electron/`): `main.js` sobe o core in-process e abre `app/dist`; `package.json` com electron-builder (alvo NSIS x64) e `extraResources`; README com build passo a passo.
+  - **Demo:** instalar numa máquina limpa da intranet e abrir o Vértice. ⏳ requer `npm run dist` em máquina com Build Tools (ver SYNC-D).
 
-- [ ] **SYNC-D** (QA) — Verificar os manifestos (detecção intacta) e o smoke test dentro do pacote.
+- [~] **SYNC-D** (QA, PENDENTE de máquina normal: `smoke-core.ps1` completo, `npm run dist` e smoke no pacote) — Verificar os manifestos (detecção intacta) e o smoke test dentro do pacote.
 
 ---
 
 ## Bloco E — Fechamento
 
-- [ ] **E1** (QA) — Varredura final de honestidade: nada simulado aparece como real em nenhuma tela;
+- [~] **E1** (QA, PARCIAL — varredura e correções feitas em 05/11/2026; `vite build` + `eslint` validados em 06/11/2026) — Varredura final de honestidade: nada simulado aparece como real em nenhuma tela;
   `AGENTS.md`, `memory.md` e o `tasks.md` original (Fases 2–5) refletem o estado real e estão marcados.
   - **Aceite:** checklist de commit da skill `vertice-verificacao` 100% atendido.
 
-- [ ] **E2** (BACKEND + FRONT) — Limpezas de dívida técnica listadas na skill `vertice-frontend`:
+- [x] **E2** (BACKEND + FRONT — 05/11/2026; `workspace.tsx` mantido sem divisão em hooks por decisão: 496 linhas funcionais, risco de regressão sem ganho) — Limpezas de dívida técnica listadas na skill `vertice-frontend`:
   renomear `package.json` (hoje `my-app`), remover `info.md`/resíduos do template do gerador, e
   dividir `workspace.tsx` em hooks (`useAgents`, `useWork`, `useSessions`, `useRuntimes`) se necessário.
   - **Aceite:** build e lint limpos; sem resíduos do template; store organizada.
+
+### Ajustes Finos da Auditoria (para fechar `E1` e `SYNC-D`)
+
+- [x] **E3** (FRONT) — Alinhar runtime da equipe proposta pelo Gerente com `approvedRuntimes` padrão do seed:
+  em `app/src/store/workspace.tsx` (template do `Analista` em `delegateToManager`) e em `app/src/components/AgentDialogs.tsx` (`ManagerDialog`), trocar `Ollama` por `Kimi CLI` (`model: 'kimi-k2'`), pois `approvedRuntimes` inicial no `db.js` é `['claude', 'codex', 'kimi', 'powershell']` (com `Ollama`, a delegação online retorna 403 até o usuário aprovar manualmente). Também ajustar o limite `maxAgents` default em `POST /api/orchestrator/delegate` (`core/src/index.js`) de `6` para `12` (o seed já inicia com 4 workers, então criar +3 estourava `4 + 3 > 6`). — *(06/11/2026)*
+  - **Aceite:** clicar em "Delegar ao Gerente → Criar equipe" com o banco recém-criado funciona de primeira (HTTP 200) sem exigir configuração prévia.
+
+- [x] **E4** (FRONT) — Corrigir cabeçalho de 7 colunas na tabela de CLIs e prompt do terminal:
+  em `app/src/pages/Org.tsx`, adicionar `<span>Aprovada</span>` antes de `<span>Ação</span>` dentro de `.cli-row--head` (hoje o cabeçalho tem 6 colunas e as linhas têm 7); em `app/src/components/TerminalPanel.tsx`, receber `workspacePath` (ou usar o path do projeto ativo) no lugar do texto fixo `PS C:\work\atlas>`. — *(06/11/2026)*
+  - **Aceite:** colunas da tabela `CLI's` perfeitamente alinhadas com os títulos e prompt do terminal exibindo o diretório real do projeto ativo.
+
+- [x] **E5** (FRONT) — Escutar evento `task-updated` no WebSocket:
+  em `app/src/store/workspace.tsx` (dentro de `connectEvents`), tratar `(event.type === 'workspace-updated' || event.type === 'task-updated') && event.snapshot` chamando `applySnapshot`. — *(06/11/2026)*
+  - **Aceite:** despachar ou concluir tarefa atualiza todas as abas abertas em tempo real via WebSocket.
+
+- [~] **E6** (QA + PKG — 06/11/2026: itens 1 e 3 feitos. Item 2 resolvido diferente do pedido: `electron@45.2.1` EXISTE no npm e foi mantido (a 45 traz o Node 24 que o `node:sqlite` exige; `^35` seria downgrade); o pacote inexistente era `electron-builder@27.0.1`, trocado por `26.18.0`. Aceite pendente: `smoke-core.ps1` 100% `[OK]` só confirmável numa máquina normal) — Atualizar `smoke-core.ps1` para o confinamento ativo, ajustar versão do Electron e commitar Blocos D/E:
+  1. Em `.agents/skills/vertice-verificacao/scripts/smoke-core.ps1` (linha 43), usar `$ws.allowedWorkspaces[0].path` como `cwd` da sessão de teste (em vez de `(Get-Location).Path`, que agora retorna 403 corretamente pelo confinamento) e adicionar asserção explícita esperando 403 para `C:\Windows`.
+  2. Em `installers/electron/package.json`, trocar `"electron": "45.2.1"` (versão inexistente no registro npm) por uma versão estável real (ex.: `"^35.0.0"`).
+  3. Commitar todas as alterações pendentes dos Blocos D e E no Git com Conventional Commits. — *(06/11/2026)*
+  - **Aceite:** `smoke-core.ps1` passa 100% `[OK]` e `git status` fica limpo.
+
+- [ ] **E7** (FRONT) — **Navegação interativa por teclado (estilo Maestri) para menus de CLIs no Terminal (`TerminalPanel.tsx` + `workspace.tsx`):**
+  Quando o usuário abre uma sessão real de uma CLI de IA (ex.: Antigravity `agy`, Claude Code `claude`, Kimi `kimi`, Codex `codex`), a CLI exibe prompts interativos de confirmação ("Trust this folder?", "Allow tool execution?", escolha de tema/login) navegados por **Setas (`↑` `↓` `←` `→`), `Enter`, `Espaço`, `Esc` e `Ctrl+C`**.
+  Hoje o `TerminalPanel.tsx` só envia linhas de texto após digitar caracteres + `Enter` (`if (!command.trim()) return`), impedindo usar as setas ou confirmar com `Enter` vazio.
+  - **O que implementar:**
+    1. Em `workspace.tsx`, expor `sendRawKey(data: string)` que envia os bytes/sequências ANSI diretamente para a sessão PTY ativa (`api.sendInput(liveSessions[agentId].id, data)`), sem adicionar `\r` extra e sem exigir texto. Também liberar comandos com `/` (ex.: `/login`, `/trust`) para irem à sessão viva se não forem os 5 comandos internos reservados (`/help`, `/status`, `/agents`, `/create`, `/delegate`, `/clear`).
+    2. Em `TerminalPanel.tsx` (tanto na área `.terminal-output` com `tabIndex={0}` quanto no `<input>` quando estiver vazio), capturar `onKeyDown` quando houver sessão real ativa (`hasLiveSession`) e enviar imediatamente as sequências ANSI do PTY:
+       - `ArrowUp` → `\x1b[A`
+       - `ArrowDown` → `\x1b[B`
+       - `ArrowRight` → `\x1b[C`
+       - `ArrowLeft` → `\x1b[D`
+       - `Enter` (com input vazio) → `\r`
+       - `Escape` → `\x1b`
+       - `Tab` → `\t`
+       - `Ctrl+C` → `\x03`
+    3. Adicionar uma barra compacta de controles interativos no cabeçalho/rodapé do terminal (visível quando `hasLiveSession` for `true`) com botões clicáveis: `↑`, `↓`, `Enter ↵`, `Esc`, `Ctrl+C` (para quem preferir clicar com o mouse ou usar o teclado).
+  - **Aceite:** Em uma sessão real de CLI que pede confirmação (como o menu de Trust/Approve do vídeo de referência do Maestri), o usuário consegue subir/descer nas opções usando as **setas do teclado** e confirmar apertando **`Enter`** (sem precisar digitar `1` ou `sim`).
 
 ---
 

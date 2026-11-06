@@ -1,7 +1,18 @@
 # Vértice — Memory (Memória Viva do Projeto)
 
 > **REGRA #1 (OBRIGATÓRIA PARA TODAS AS IAs E SESSÕES):**
-> Toda informação relevante para o avanço da tarefa e **tudo o que foi feito** DEVE ser registrado neste arquivo (`memory.md`) antes de encerrar qualquer etapa ou turno de implementação, e a respectiva tarefa deve ser marcada como concluída em `tasks.md`. Mesmo que a conversa seja compactada, reiniciada ou assumida por outra IA, a leitura de `memory.md` + `tasks.md` deve ser suficiente para retomar o trabalho exatamente de onde parou, sem perda de contexto.
+> Toda informação relevante para o avanço da tarefa e **tudo o que foi feito** DEVE ser registrado neste arquivo (`memory.md`) antes de encerrar qualquer etapa ou turno de implementação, e a respectiva tarefa deve ser marcada como concluída em `tasks-agentes.md` (quadro ativo) e no `tasks.md` (quadro por fase). Mesmo que a conversa seja compactada, reiniciada ou assumida por outra IA, a leitura de `memory.md` + `tasks-agentes.md` + `tasks.md` deve ser suficiente para retomar o trabalho exatamente de onde parou, sem perda de contexto.
+
+---
+
+## 0. Fluxo de Trabalho Vigente (Agentes + Skills)
+
+> **Atualizado em 05/11/2026.** O projeto passou a ser conduzido por um **time de agentes** e pelo quadro de tarefas por responsável.
+
+- **Quadro de tarefas ativo:** `tasks-agentes.md` — reorganiza o roadmap pendente (Fases 2 a 5 do `tasks.md`) em tarefas acionáveis por agente, com dependências, paralelismo e pontos de verificação (SYNC) por bloco (A, B, C, D, E). O `tasks.md` (quadro por fase técnica) coexiste e deve ser marcado em paralelo.
+- **Time de agentes (`.kiro/agents/`):** `vertice-backend` (BACKEND), `vertice-seguranca` (SEG), `vertice-orquestracao` (ORQ), `vertice-frontend` (FRONT), `vertice-runtimes-pacote` (PKG) e `vertice-qa` (QA). Cada agente tem um domínio exclusivo; os handoffs do `tasks-agentes.md` marcam a troca e **dois agentes nunca editam o mesmo arquivo ao mesmo tempo**.
+- **Skills do projeto (`.agents/skills/`):** 8 skills especializadas (`vertice`, `vertice-core-backend`, `vertice-runtimes`, `vertice-workspace-seguranca`, `vertice-frontend`, `vertice-orquestracao`, `vertice-verificacao`, `vertice-empacotamento`) com índice em `SKILLS.md`. A skill `vertice` é a porta de entrada obrigatória; `vertice-verificacao` contém o `smoke-core.ps1` e o checklist de honestidade usado pelos SYNCs do QA.
+- **Observação sobre invocação:** os agentes de `.kiro/agents/` são perfis da aba de agentes do Kiro; não são subagentes de implementação automaticamente invocáveis. Na prática, a execução tem sido direta seguindo a skill do domínio de cada agente.
 
 ---
 
@@ -74,10 +85,18 @@
 
 ---
 
-## 5. Qual é o Próximo Passo Imediato (Fase 2)
+## 5. Qual é o Próximo Passo Imediato (Bloco D — `tasks-agentes.md`)
 
-**Fase 2 — Confinamento de Workspace e Políticas Reais no Backend (`2.1` a `2.4`):**
-Criar `core/src/workspace.js` para validar tecnicamente os diretórios de projetos (`resolveInside`, `assertAllowedCwd`), bloquear acessos fora do workspace com HTTP `403` (removendo o fallback silencioso para `homedir()`), persistir a aprovação de CLIs e políticas da tela `CLI's` no SQLite e mover a instalação de CLIs para um endpoint dedicado (`POST /api/runtimes/:id/install`).
+Blocos **A** (segurança/Fase 2), **B** (orquestração/Fases 3–4) e **C** (frontend honesto) estão concluídos. A única pendência de B é **B3** (detecção automática de conclusão), que está **preparada mas não ativada** por falta de CLI de IA autenticada na máquina.
+
+**Bloco D — Manifestos e Empacotamento (Fase 5), agente `PKG` (`vertice-runtimes-pacote`), skill `vertice-empacotamento`:**
+- **D1 (CONCLUÍDO 05/11/2026):** `RUNTIME_CATALOG` extraído para manifestos declarativos `vertice/runtimes/<id>.json`; `runtimes.js` lê a pasta no boot, com fallback embutido. Ver histórico abaixo.
+- **D2 (CONCLUÍDO 05/11/2026):** Scaffold Electron em `vertice/installers/electron/` (main sobe o core in-process, abre `app/dist`, dados em `%APPDATA%\Vertice`). Core preparado com `VERTICE_DATA_DIR`/`VERTICE_RUNTIMES_DIR` e `startCore()` exportado. Falta gerar o `.exe` (`npm run dist`) numa máquina com Build Tools. Ver histórico abaixo.
+- **SYNC-D (QA — pendente de máquina normal):** manifestos com detecção intacta (reexecutar `smoke-core.ps1`) + `npm run dist` + smoke test dentro do pacote instalado.
+
+Depois do SYNC-D resta o **Bloco E** (fechamento): E1 (varredura final de honestidade) e E2 (dívida técnica — `app/package.json` hoje `my-app`, remover `info.md`/resíduos de template, avaliar dividir `workspace.tsx` em hooks).
+
+Depois do Bloco D, resta o **Bloco E** (fechamento): E1 (varredura final de honestidade) e E2 (dívida técnica — renomear `package.json` hoje `my-app`, remover `info.md`/resíduos de template, dividir `workspace.tsx` em hooks).
 
 ### [05/11/2026] Blocos A e B do tasks-agentes.md — Confinamento (Fase 2) e Orquestração Real (Fases 3/4)
 Executado pela Opção 1 (implementação direta seguindo as skills). Os agentes customizados em `.kiro/agents/` são para a aba de agentes do Kiro; não são invocáveis como subagentes de implementação, por isso a execução foi direta.
@@ -114,3 +133,76 @@ Liga as telas aos dados reais do backend e remove indicadores simulados. Build e
 **Estado real atualizado:** políticas e aprovação de CLIs agora são REAIS ponta a ponta (UI → backend → efeito em sessões). Progresso falso removido da UI. Banner de demonstração honesto conforme conexão.
 
 **Próximo passo:** Bloco D (D1: extrair RUNTIME_CATALOG para manifestos JSON em runtimes/; D2: empacotamento Windows em installers/). Depois Bloco E (fechamento e limpeza de dívidas: package.json "my-app", resíduos de template).
+
+### [05/11/2026] Bloco D1 concluído — Manifestos Declarativos de Runtimes (Fase 5.1)
+Agente `PKG` (`vertice-runtimes-pacote`), skill `vertice-empacotamento`. Extraído o catálogo hardcoded para arquivos JSON declarativos; `runtimes.js` passa a ler a pasta no boot.
+
+- **`vertice/runtimes/<id>.json` (9 NOVOS):** `claude`, `codex`, `kimi`, `glm`, `antigravity`, `opencode`, `ollama`, `lmstudio`, `powershell`. Cada manifesto traz `id`, `name`, `kind`, `command`, `versionArgs`, `sessionArgs`, `install`, `http`, além de dois campos novos: `authenticates` (true p/ CLIs de IA que exigem login — preparo p/ B3/F1) e `order` (ordem de exibição). O `.gitkeep` da pasta foi removido.
+- **`vertice/runtimes/README.md` (NOVO):** documenta o esquema do manifesto e a regra "adicionar uma CLI = criar um arquivo `<id>.json`" (sem editar código).
+- **`core/src/runtimes.js`:** `RUNTIME_CATALOG` agora é montado por `loadCatalog()`, que lê `MANIFESTS_DIR` (`core/src/../../runtimes`, resolvido via `import.meta.url`), valida campos obrigatórios (`REQUIRED_FIELDS`), ignora manifestos malformados com `console.warn`, normaliza os campos opcionais e ordena por `order`. Mantido um `FALLBACK_CATALOG` embutido idêntico, usado só se a pasta estiver ausente/vazia (ex.: build empacotado antes de copiar assets) — a detecção nunca quebra. A **forma exportada do catálogo é idêntica à anterior**, então `index.js` (`/api/catalog`, `/api/runtimes/:id/install`, `/api/sessions`) e `orchestrator.js` consomem sem alteração.
+- **Verificação:** import do módulo confirma 9 runtimes na ordem correta e com a mesma shape (`command`/`versionArgs`/`sessionArgs`/`install`/`http` preservados); os 9 JSON validam como JSON parseável. OBSERVAÇÃO DE AMBIENTE: nesta sessão o sandbox bloqueia/atrasa o spawn de subprocessos (`where`, erro `0x800700CB` e aviso de FileSystem provider), então `detectRuntimes()` ao vivo e o `smoke-core.ps1` completo deram timeout — não é defeito do código (a lógica de detecção é a mesma que passou em 05/11/2026 e o catálogo carrega instantaneamente). Reexecutar o smoke test numa máquina normal para fechar o SYNC-D.
+
+**Próximo passo:** D2 (empacotamento desktop Windows em `vertice/installers/` — decisão Electron vs. alternativas pendente de confirmação do usuário, ver skill `vertice-empacotamento`), depois SYNC-D e o Bloco E (fechamento).
+
+### [05/11/2026] Bloco D2 concluído — Empacotamento Desktop Windows com Electron (Fase 5.2)
+Agente `PKG` (`vertice-runtimes-pacote`), skill `vertice-empacotamento`. Escolhido **Electron** (confirmado pelo usuário), por embutir Node com suporte a `node-pty` e `node:sqlite` — as dependências nativas do core.
+
+**Core preparado para empacotamento (sem acoplar Electron ao core):**
+- `core/src/db.js`: `dataDir` agora honra `VERTICE_DATA_DIR` (fallback para `core/data`). No app empacotado, o SQLite vai para `%APPDATA%\Vertice\data`, fora dos arquivos de programa (read-only).
+- `core/src/runtimes.js`: `MANIFESTS_DIR` agora honra `VERTICE_RUNTIMES_DIR` (fallback para `../../runtimes`). Permite apontar para os manifestos embarcados em `resources/`.
+- `core/src/index.js`: refatorado para exportar `startCore({ port })`, `server` e `PORT`. O `server.listen` saiu do topo do módulo e virou `startCore()`; auto-start só acontece no modo standalone (`node src/index.js`) via checagem de entrypoint (`fileURLToPath(import.meta.url) === resolve(process.argv[1])`). Assim o processo main do Electron importa o core e sobe in-process sem spawnar outro Node. Verificado: importar o módulo não dispara o listen (exports `PORT,server,startCore`).
+- Nota: `sessions.js` já filtra `VERTICE_*` do env dos processos filhos (`buildChildEnv`), então as novas vars de config não vazam para as CLIs.
+
+**Scaffold Electron (`vertice/installers/electron/`, NOVOS):**
+- `main.js`: processo main ESM. Define `VERTICE_DATA_DIR` (= `app.getPath('userData')/data`) e `VERTICE_RUNTIMES_DIR`; resolve `resourcesRoot` por `app.isPackaged` (dev = `vertice/`; empacotado = `process.resourcesPath`); importa dinamicamente `core/src/index.js` via `pathToFileURL` e chama `startCore()`; abre `BrowserWindow` (contextIsolation ligado, nodeIntegration desligado) carregando `app/dist/index.html` (com fallback honesto se o build não existir); abre links externos no navegador padrão.
+- `preload.js`: ponte mínima ESM (`window.vertice = { packaged, coreBaseUrl }`); o frontend continua falando com o core por HTTP/WS em `localhost:7845`.
+- `package.json`: deps `electron@45.2.1` (Node 24 embutido → `node:sqlite` disponível), `@electron/rebuild@4.0.1`, `electron-builder@27.0.1`. Scripts `start` (dev), `rebuild` (recompila node-pty para o ABI do Electron), `dist` (NSIS x64), `pack`. `extraResources` copia `core` (sem `data/`), `app/dist` e `runtimes/*.json` para `resources/`. Alvo `nsis` com diretório de instalação escolhível e atalhos.
+- `README.md`: build passo a passo (build do app → npm install do core → rebuild nativo → `npm run dist`), pontos de atenção (`node:sqlite` no Electron 45, rebuild do `node-pty`, confinamento intacto, assinatura de código) e checklist de verificação SYNC-D.
+- Removido o `.gitkeep` de `installers/`.
+
+**Verificação:** `node --check` OK em `main.js` e `preload.js`; `core/src/index.js` importa e exporta `startCore` sem auto-start; `db.js` com `VERTICE_DATA_DIR` cria o banco no caminho custom e seeda 5 agentes + 2 projetos + settings; catálogo de runtimes carrega 9 dos manifestos. OBSERVAÇÃO DE AMBIENTE: o build real do instalador (`npm run dist`) e o `electron-rebuild` NÃO foram executados nesta sessão — exigem `npm install` do Electron (~downloads grandes) e Visual Studio Build Tools; o sandbox ainda bloqueia/atrasa spawn de subprocessos. Rodar numa máquina Windows normal para gerar e validar o `.exe` (SYNC-D / E1).
+
+**Estado real:** Fase 5 (manifestos + empacotamento) implementada no código. Falta apenas gerar o artefato instalável numa máquina com toolchain e validar em máquina limpa.
+
+**Próximo passo:** Bloco E (fechamento): E1 (varredura final de honestidade + confirmar `tasks.md`/`memory.md` coerentes) e E2 (dívida técnica — `app/package.json` ainda é `"my-app"`; remover `info.md`/resíduos de template; avaliar dividir `workspace.tsx` em hooks). SYNC-D pendente de máquina com Build Tools para empacotar de fato.
+
+### [05/11/2026] Bloco E — Fechamento (E2 concluído, E1 parcial)
+
+**E2 — Dívida técnica (concluído):**
+- `app/package.json`: nome `my-app` → `vertice-app`, versão `0.1.0`; `package-lock.json` regenerado via `npm install`.
+- Removidos resíduos do gerador: `app/info.md` (apagado), `app/README.md` (template Vite substituído por doc real do Vértice) e o plugin `kimi-plugin-inspect-react` (removido de `vite.config.ts` e das devDependencies; 100 pacotes a menos).
+- `app/eslint.config.js`: override para `src/components/ui/**` desligando `react-refresh/only-export-components` e `react-hooks/purity`. Motivo: primitivos shadcn são gerados e exportam variantes junto dos componentes. Antes do override havia 8 erros, todos nesses arquivos.
+- `workspace.tsx` (496 linhas) NÃO foi dividido em hooks: o item era condicional ("se necessário"), a store funciona e o risco de regressão superava o ganho.
+
+**E1 — Varredura de honestidade (correções feitas):**
+- BUG ENCONTRADO: o frontend nunca chamava `POST /api/orchestrator/delegate`. `delegateToManager` seguia usando templates fixos com `progress` falso e a mensagem "Equipe simulada criada", mesmo online. Corrigido: `api.ts` ganhou `orchestratorDelegate`; online, `delegateToManager` chama o orquestrador real e mostra mensagens honestas (subagentes reais criados, sessões iniciam ao despachar no Work; falha mostra aviso sobre runtimes aprovados). Offline mantém a simulação, rotulada como demonstração.
+- `AgentDialogs.tsx`: removido `C:\work\atlas` hardcoded (agora usa o path do projeto ativo, via `scopePath`); rótulos "SIMULAÇÃO"/"simulada neste protótipo" agora dependem de `serviceOnline`; eyebrow "AÇÃO NO PROTÓTIPO" → "REMOVER AGENTE".
+- `Projects.tsx`: nota "troca de projeto é visual" era falsa online (ativar/criar projeto persiste no core); agora condicional. Default do campo workspace `C:\work\` removido.
+- `Agentes.tsx` + `index.css`: o card ainda exibia barra de `progress` falso (C2 só cobrira AgentNode/Inspector). Trocada por indicador "Em execução" sem porcentagem.
+- `Organograma.tsx`: mensagem padrão do terminal "Modo demonstração" agora reflete o estado real (sessão viva / sem sessão / core offline).
+- `App.tsx`: textos "protótipo" no modal de preferências ajustados ("Restaurar dados iniciais").
+- `AGENTS.md`: seções "O que é REAL" e "O que ainda NÃO é automático" reescritas e roadmap atualizado (estavam desatualizadas, ainda listavam como simulado o que já é real).
+
+**Verificação:** `eslint .` exit 0; `tsc -b` exit 0. NÃO verificado: `vite build` deu timeout (240 s) neste sandbox, que já bloqueia spawn de subprocessos; teste visual no navegador e `smoke-core.ps1` completo também pendentes. Num ambiente normal: `npm run build` no `app/`, depois `smoke-core.ps1` e uma passada nas 5 telas.
+
+**Pendências conhecidas:**
+- ~~Mapa `nameToId` do GLM~~ CORRIGIDO (05/11/2026): `core/src/orchestrator.js` agora exporta `runtimeIdFromName()` (fonte única; aceita `GLM CLI`, `GLM CLI (Z.ai)` e o próprio id). `POST /api/orchestrator/delegate` usa essa função e retorna 400 para runtime desconhecido, em vez de cair em `powershell` em silêncio (o que contornaria a checagem de aprovação). Verificado por import: `GLM CLI`/`GLM CLI (Z.ai)`/`glm` → `glm`; `Foo` → `null`; `index.js` carrega. Fluxo HTTP completo não testado (sandbox sem spawn).
+- SYNC-D, B3 e SYNC-C visual continuam abertos; F1/F2 seguem como trabalho futuro.
+- Itens residuais com "demonstração" no texto são o caminho offline e estão corretos.
+
+**Próximo passo:** Implementar a task **E7 (`6.5` em `tasks.md`) — Interação por Setas e Enter no Terminal (estilo Maestri)**:
+- **Contexto (vídeo de referência do Maestri):** Em sessões reais de CLIs de IA (como Antigravity `agy`, Claude Code `claude`, Kimi `kimi`), aparecem menus interativos no terminal (ex.: *"Trust this folder?"*, *"Approve tool execution?"*, seleção de login/tema) onde o usuário navega com as **setas (`↑` / `↓`)** e confirma com **`Enter`**.
+- **Problema atual:** `TerminalPanel.tsx` ignora `Enter` quando o input de texto está vazio (`if (!command.trim()) return`) e não captura `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`, `Escape` ou `Ctrl+C`, obrigando o usuário a tentar digitar números/texto em vez de usar as setas.
+- **Solução especificada em E7 (`tasks-agentes.md`):**
+  1. Adicionar `sendRawKey(data: string)` no `workspace.tsx` que chama `api.sendInput(liveSessions[agent.id].id, data)` diretamente sem `\r` extra, e permitir que comandos `/` que não sejam os 6 internos (`/help`, `/status`, `/agents`, `/create`, `/delegate`, `/clear`) sejam enviados à sessão real.
+  2. Capturar `onKeyDown` no `TerminalPanel.tsx` quando houver sessão real ativa (`hasLiveSession`) para enviar imediatamente `\x1b[A` (`↑`), `\x1b[B` (`↓`), `\x1b[C` (`→`), `\x1b[D` (`←`), `\r` (`Enter` com campo vazio), `\x1b` (`Esc`), `\t` (`Tab`) e `\x03` (`Ctrl+C`), mais botões rápidos clicáveis na barra do terminal (`↑`, `↓`, `Enter ↵`, `Esc`, `Ctrl+C`).
+
+### [06/11/2026] Ajustes finos E3–E6 (tasks-agentes.md)
+
+- **E3:** template do `Analista` (store e `ManagerDialog`) trocado de `Ollama` para `Kimi CLI` (`kimi-k2`), runtime aprovado no seed; `maxAgents` default de `/api/orchestrator/delegate` 6 → 12 (o seed tem 4 workers; +3 estourava o limite). Sem isso a delegação online num banco novo falharia (403/400).
+- **E4:** `Org.tsx` ganhou a coluna "Aprovada" no cabeçalho (7 colunas, alinhado às linhas). `TerminalPanel` recebe `workspacePath` (de `Organograma.tsx`) e mostra o path real do projeto ativo no prompt (CSS com ellipsis); placeholder "explorar a simulação" → "ver os comandos".
+- **E5:** o core já emitia `task-updated` (dispatch/complete) com `snapshot`, mas o frontend só tratava `workspace-updated`. Agora ambos chamam `applySnapshot`.
+- **E6 (1):** `smoke-core.ps1` usa o primeiro `allowedWorkspaces` como cwd da sessão válida e ganhou `Expect-403` para `C:\Windows` e para traversal `..`.
+- **E6 (2) — CORREÇÃO DA PREMISSA:** conferido no registro npm: `electron@45.2.1` EXISTE (latest 45.2.3; Node 24 embutido, necessário para `node:sqlite`), então NÃO foi feito downgrade para `^35`. O pacote inexistente era `electron-builder@27.0.1` (404; latest 26.18.0, a 27 só tem alpha) — erro meu de D2, vindo de um snippet de busca. Trocado por `26.18.0`. `@electron/rebuild@4.0.1` existe.
+- **Verificação:** `tsc -b` e `eslint .` exit 0. Contra o core real (porta 7845): `cwd=C:\Windows` → 403 e traversal → 403 (asserções novas validadas). NÃO verificado: sessão válida (500 por `EPERM` ao criar `%USERPROFILE%\vertice-workspaces\atlas`, e o spawn do PTY travou — ambos limites do sandbox), `/api/runtimes` (detecção dá timeout) e portanto o `smoke-core.ps1` completo. Rodar o smoke numa máquina normal.
+- **Commit:** alterações pendentes dos Blocos D/E commitadas em commits separados por escopo (Conventional Commits).
