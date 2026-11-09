@@ -122,7 +122,7 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
   - **Aceite:** mover uma tarefa para "Em andamento" abre/usa sessão real e envia a instrução.
   - **Demo:** arrastar um card no Work e ver a sessão real no terminal do Organograma.
 
-- [~] **B3** (ORQ, PREPARADO — aguardando CLI de IA autenticada) — Detecção de conclusão via modo não interativo da CLI (pesquisar as flags oficiais
+- [~] **B3** (ORQ — atendida de outra forma pela E13: detecção por heurística no terminal INTERATIVO, sem modo não interativo; ainda sem validação com CLI real) — Detecção de conclusão via modo não interativo da CLI (pesquisar as flags oficiais
   de Claude/Codex/Kimi antes de implementar; prompt único + exit code/JSON). Resultado → `review`
   (ou `done`), anexando o log/saída ao histórico da tarefa.
   - **Aceite:** a tarefa conclui e migra para "Aguardando aprovação" com log salvo.
@@ -184,13 +184,13 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
   - **Aceite:** artefato instalável que sobe o core e abre o app. ✓ scaffold Electron pronto (`installers/electron/`): `main.js` sobe o core in-process e abre `app/dist`; `package.json` com electron-builder (alvo NSIS x64) e `extraResources`; README com build passo a passo.
   - **Demo:** instalar numa máquina limpa da intranet e abrir o Vértice. ⏳ requer `npm run dist` em máquina com Build Tools (ver SYNC-D).
 
-- [~] **SYNC-D** (QA, PENDENTE de máquina normal: `smoke-core.ps1` completo, `npm run dist` e smoke no pacote) — Verificar os manifestos (detecção intacta) e o smoke test dentro do pacote.
+- [x] **SYNC-D** (QA — 09/11/2026: `Vertice-Setup-0.1.0.exe` e `win-unpacked\Vértice.exe` compilados e executados com sucesso; `express`/`ws`/`node-pty` empacotados em `resources\core\node_modules`; `/api/health`, `/api/workspace`, `/api/runtimes` e banco `%APPDATA%\Vértice\data\vertice.db` verificados) — Verificar os manifestos (detecção intacta) e o smoke test dentro do pacote.
 
 ---
 
 ## Bloco E — Fechamento
 
-- [~] **E1** (QA, PARCIAL — varredura e correções feitas em 05/11/2026; `vite build` + `eslint` validados em 06/11/2026) — Varredura final de honestidade: nada simulado aparece como real em nenhuma tela;
+- [x] **E1** (QA — varredura e correções feitas em 05/11/2026; `vite build` + `eslint` + instalador validados em 09/11/2026) — Varredura final de honestidade: nada simulado aparece como real em nenhuma tela;
   `AGENTS.md`, `memory.md` e o `tasks.md` original (Fases 2–5) refletem o estado real e estão marcados.
   - **Aceite:** checklist de commit da skill `vertice-verificacao` 100% atendido.
 
@@ -268,7 +268,7 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
 
 - [x] **E11** (CORE + FRONT — 06/11/2026, revisão de código; lógica testada isoladamente e via HTTP; despacho com CLI real NÃO testado) — **Despacho e boot:** (1) `dispatchWorkItem` envia a instrução em UMA linha (quebras viravam Enter e enviavam o prompt picado), espera a CLI de uma sessão NOVA terminar de subir (saída quieta por 800 ms, máx. 10 s) e manda o Enter em escrita separada após 200 ms; se a sessão morrer, falha com mensagem em vez de marcar `doing`. (2) Sem projeto ativo o despacho responde 400 claro (antes 403 "Caminho ausente"). (3) `complete` de tarefa inexistente responde 404 (antes devolvia ok / requisição pendurada). (4) `detectRuntimes` ganhou cache de 20 s + deduplicação de chamadas simultâneas; `GET /api/runtimes?refresh=1` e a instalação ignoram o cache. (5) O boot do frontend aplica o snapshot e abre o WebSocket ANTES da detecção de CLIs (lenta), que agora tem timeout próprio de 90 s (antes abortava em 8 s e as CLIs "sumiam").
 
-- [~] **E12** (PKG + CORE + FRONT — 06/11/2026: APLICADO. Item 1 confirmado por teste (o core encerrava com ReferenceError ao chamar /api/runtimes; agora segue vivo). Itens 2–4 dependem de rodar `npm run pack` e abrir o `Vértice.exe` numa máquina com rede (aceite) — **PRIORIDADE IMEDIATA · FALHAS ENCONTRADAS AO COMPILAR E EXECUTAR O INSTALADOR REAL**) — **Correções para o instalador `Vertice-Setup-0.1.0.exe` (Electron) e `GET /api/runtimes` rodarem de ponta a ponta:**
+- [x] **E12** (PKG + CORE + FRONT — 09/11/2026: CONCLUÍDO E VALIDADO EM EXECUÇÃO REAL. `npm run build` em `app/` + `electron-builder` geraram `Vertice-Setup-0.1.0.exe` (133 MB); `Vértice.exe` empacotado iniciou `vertice-core` na `:7845` com `stderr` vazio, respondeu `/api/health`, `/api/workspace` (limpo) e `/api/runtimes` (`claude(2.1.318), codex(0.167.0), kimi(2.5.2), antigravity(1.5.3)`), e criou `%APPDATA%\Vértice\data\vertice.db`) — **Correções para o instalador `Vertice-Setup-0.1.0.exe` (Electron) e `GET /api/runtimes` rodarem de ponta a ponta:**
   Ao rodar `npm install` + `npm run dist` em `installers/electron` e executar o binário gerado (`out\win-unpacked\Vértice.exe` e `electron .`), a auditoria encontrou **4 bugs reais** (o `node-pty@1.1.0` já usa N-API pré-compilado e rodou nativamente no Electron 45 `ABI=150 Node 24.22.1` sem precisar de C++ Build Tools!):
   1. **[CRÍTICO — CORE] `ReferenceError: req is not defined` em `GET /api/runtimes` (`core/src/index.js` linhas 57–60):**
      Introduzido na E11: a assinatura da rota está `app.get('/api/runtimes', async (_req, res) => {` mas na linha 59 chama `req.query.refresh === '1'`. Isso lança `UnhandledPromiseRejectionWarning: ReferenceError: req is not defined at core/src/index.js:59:54` em toda chamada a `/api/runtimes`, travando a detecção de CLIs!
@@ -292,6 +292,25 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
      No Electron 45 o pacote removeu o `postinstall` automático e expõe `"install-electron": "install.js"`.
      - **Correção:** Adicionar `"postinstall": "node node_modules/electron/install.js"` nos `scripts` de `installers/electron/package.json` e adicionar `out/` ao `.gitignore` da raiz.
   - **Aceite:** `npm run dist` (ou `npm run pack`) gera `out\win-unpacked\Vértice.exe` contendo `resources\core\node_modules\express`, `ws` e `node-pty`; ao iniciar `Vértice.exe`, `GET http://localhost:7845/api/health` e `GET http://localhost:7845/api/runtimes` respondem `200 OK` sem `ReferenceError` e a janela navega entre as 5 abas sem quebrar no reload.
+
+- [~] **E13** (ORQ + FRONT — 06/11/2026: IMPLEMENTADO; testado com relógio simulado (monitor), ligação ao orquestrador e banco real; NÃO validado com uma CLI real (PTY e login indisponíveis no sandbox) — **PRIORIDADE IMEDIATA · FECHA TAMBÉM A B3**) — **Mover automaticamente as tarefas em andamento (`doing`) para "Aguardando aprovação" (`review`) assim que a IA terminar a execução (`core/src/orchestrator.js` + `app/src/store/workspace.tsx` + `app/src/pages/Work.tsx`):**
+  Hoje, quando uma tarefa é despachada (`dispatchWorkItem`), ela entra em `doing` ("Em andamento") e envia a instrução para a sessão PTY da CLI do agente, mas **nunca avança sozinha para `review` ("Aguardando aprovação")** quando a IA termina de responder/executar — exigindo que o usuário mova o card manualmente.
+  - **O que implementar no Backend (`core/src/orchestrator.js`):**
+    1. **Rastreador de tarefa ativa por sessão (`activeSessionTasks`):**
+       Ao despachar uma tarefa em `dispatchWorkItem(workItemId)` (após enviar a instrução e o `\r`), registrar a tarefa em execução naquela sessão (`sessionId → { workItemId, agentId, sentAt, instruction, rawChunks, responseStarted, quietTimer }`).
+    2. **Instrução com marcador explícito de conclusão (sem depender só de heurística de tempo):**
+       Incluir no final da instrução enviada ao agente um protocolo simples, por exemplo:
+       `Ao finalizar esta tarefa, escreva na última linha exatamente: [TAREFA_CONCLUIDA]`
+       - **Cuidado essencial com o eco do PTY:** quando `writeToSession` envia a instrução, o próprio terminal ecoa a linha digitada nos primeiros milissegundos! Portanto, o detector **não** deve disparar no eco do comando enviado (ignorar saída nos primeiros ~800ms ou descartar o trecho que contém a própria string `instruction` / `Ao finalizar esta tarefa, escreva`).
+    3. **Três gatilhos automáticos para chamar `completeWorkItem(workItemId, { result })` (movendo `doing` → `review` / "Aguardando aprovação"):**
+       - **Gatilho 1 (Marcador explícito na resposta da IA):** Assim que a saída da IA (após o eco inicial) contiver `[TAREFA_CONCLUIDA]` (ou retorno ao prompt do PowerShell `PS ...>` quando o runtime for `powershell`), concluir imediatamente a tarefa com os últimos ~1500 caracteres limpos (sem ANSI) como `result`.
+       - **Gatilho 2 (Encerramento da sessão — `event.type === 'exit'`):** Se o processo da CLI encerrar (`exitCode === 0`) enquanto houver tarefa ativa naquela sessão, chamar `completeWorkItem(workItemId, { result })` automaticamente (se `exitCode !== 0` sem saída útil, registrar `error: "Processo encerrado com código X"` ou mover para `review` com aviso).
+       - **Gatilho 3 (Fim de turno / Silêncio pós-resposta nas TUIs interativas — Claude, Kimi, Codex, Antigravity):** Como as CLIs interativas continuam abertas esperando o próximo comando depois de terminar a resposta, iniciar/resetar um timer de conclusão por inatividade (`IDLE_COMPLETE_MS`, ex.: `4500ms` sem novos chunks) **somente depois** que a IA já tiver produzido resposta real (após o eco inicial do comando) **e desde que** as últimas linhas da saída **não** sejam um prompt interativo de bloqueio aguardando confirmação do usuário (ex.: `Trust this folder`, `Allow`, `[y/n]`, `(y/n)`, `Yes, I trust`). Quando o timer disparar, chamar `completeWorkItem(workItemId, { result })` e registrar evento `"Tarefa concluída pelo agente e movida para Aguardando aprovação: <título>"`.
+    4. **Limpeza ao concluir manualmente:** Se `completeWorkItem(workItemId)` for chamado manualmente antes (ou se a tarefa mudar de status), cancelar o monitor/timer daquela tarefa para não concluir duas vezes.
+  - **O que implementar no Frontend (`app/src/store/workspace.tsx` + `app/src/pages/Work.tsx`):**
+    1. Em `workspace.tsx`: ao receber o evento WebSocket `task-updated` (quando uma tarefa que estava em `doing` passa para `review`), exibir um toast informativo (`toast.success('Tarefa concluída pela IA → Aguardando aprovação')`).
+    2. Em `Work.tsx` (`WorkCard`): quando `item.status === 'review'` (ou `done`) e `item.result` existir, exibir um pequeno resumo/prévia limpa (1–2 linhas truncadas) no card para o gestor ver o que a IA entregou antes de aprovar (`→ Concluído`).
+  - **Aceite:** Ao despachar uma tarefa para um agente (`doing`), assim que o agente/CLI termina a execução da entrega (seja por `[TAREFA_CONCLUIDA]`, retorno de prompt ou fim do stream da resposta da IA), o card migra sozinho em tempo real para a coluna **"Aguardando aprovação" (`review`)**, o status do agente volta a **"Disponível" (`idle`)** e o evento/resultado fica salvo no SQLite.
 
 ---
 

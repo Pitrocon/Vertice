@@ -341,3 +341,49 @@ Revisão de leitura do core/app encontrou, e CONFIRMOU rodando contra o servidor
 3. **`BrowserRouter` em `file://`.** `main.tsx` usa `HashRouter` quando `location.protocol === 'file:'` (dev/preview seguem com `BrowserRouter`), evitando rota `file:///C:/agentes` e tela em branco no F5.
 4. **Electron 45 não baixa o binário no `npm install`** (o pacote publicado não tem `scripts`; só expõe `install-electron`). Adicionado `"postinstall": "node node_modules/electron/install.js"`. `out/` entrou no `.gitignore`.
 - **Verificação:** item 1 por teste de processo (antes/depois); `package.json` validado como JSON e as entradas de `extraResources` conferidas; `tsc -b` e `eslint .` exit 0. **NÃO verificado:** `npm run pack`/`dist` (sem rede no sandbox) — falta confirmar que `out\win-unpacked\resources\core\node_modules\express`, `ws` e `node-pty` existem; abrir `Vértice.exe` e testar `/api/health`, `/api/runtimes` e o F5 em cada aba (HashRouter e token no Electron real).
+
+
+### [09/11/2026] Auditoria Final E12 + SYNC-D — Instalador `Vertice-Setup-0.1.0.exe` Compilado e Validado
+
+- **Build de produção completo:**
+  1. `npm run build` em `vertice/app` (`tsc -b && vite build` com `HashRouter` para `file:`) → `0` erros (5.97s).
+  2. `electron-builder --win --x64` em `vertice/installers/electron` → gerou o instalador NSIS **`Vertice-Setup-0.1.0.exe` (133 MB)** em `installers/electron/out/Vertice-Setup-0.1.0.exe` e `installers/electron/dist-out/Vertice-Setup-0.1.0.exe`.
+- **Verificação do aplicativo empacotado (`win-unpacked\Vértice.exe`):**
+  - `resources\core\node_modules\express` = `True`, `ws` = `True`, `node-pty` = `True`.
+  - `Vértice.exe` iniciado → `[vertice-core] ouvindo em http://localhost:7845 (ws em /ws)` com **`stderr` 100% limpo** (zero erros).
+  - `GET http://localhost:7845/api/health` → `{"ok":true,"service":"vertice-core","version":"0.1.0"}`.
+  - `GET http://localhost:7845/api/workspace` → `projects=0, agents=0, approved=claude,codex,kimi,powershell` (estado limpo para operar do zero).
+  - `GET http://localhost:7845/api/runtimes` → `200 OK` (`claude(2.1.318), codex(0.167.0), kimi(2.5.2), antigravity(1.5.3), powershell()`).
+  - Banco SQLite criado automaticamente em `%APPDATA%\Vértice\data\vertice.db` (`True`).
+  - **E12 (`6.10`), E1 e SYNC-D marcados como `[x]` concluídos.**
+
+
+### [09/11/2026] Nova Task E13 (`6.11` / `B3`) — Mover Automaticamente Tarefas Concluídas pela IA para "Aguardando aprovação" (`review`)
+
+- **Solicitação do usuário:** Assim que as IAs terminarem as tarefas em andamento (`doing`), elas devem mover automaticamente o card para a coluna **"Aguardando aprovação" (`review`)**.
+- **Especificação técnica registrada em `tasks-agentes.md` (E13) e `tasks.md` (6.11):**
+  1. **Backend (`core/src/orchestrator.js`):**
+     - Manter mapa `activeSessionTasks` (`sessionId → { workItemId, agentId, sentAt, instruction, rawChunks, responseStarted, quietTimer }`) alimentado por `dispatchWorkItem` e monitorado em `trackedBroadcast(event)`.
+     - Anexar à instrução enviada ao agente: `Ao finalizar esta tarefa, escreva na última linha exatamente: [TAREFA_CONCLUIDA]`.
+     - Ignorar o eco inicial do próprio comando enviado ao PTY (primeiros ~800ms ou descartando o trecho que casa com a instrução enviada).
+     - Acionar `completeWorkItem(workItemId, { result })` automaticamente quando ocorrer qualquer um dos 3 gatilhos:
+       - **(a) Marcador explícito:** saída da IA (após o eco) contém `[TAREFA_CONCLUIDA]` (ou prompt `PS ...>` no PowerShell);
+       - **(b) Fim do processo (`exit`):** a sessão encerra (`exitCode === 0` → `review` com `result`; se erro sem resposta, registra aviso);
+       - **(c) Silêncio pós-resposta em TUIs interativas (Claude, Kimi, Codex, Antigravity):** após a IA ter produzido saída de resposta real (`responseStarted = true`), se ficar quieta por `IDLE_COMPLETE_MS` (~4500ms) e o final da saída **não** for um menu bloqueante aguardando confirmação do usuário (`Trust`, `Allow`, `[y/n]`, `(y/n)`), concluir a tarefa automaticamente com os últimos ~1500 caracteres limpos em `result`, mudando `status` para `review`, o agente para `idle`, gravando evento no histórico e emitindo `task-updated` no WebSocket.
+     - Limpar o monitor em `completeWorkItem` para evitar conclusão duplicada se o usuário mover o card manualmente antes.
+  2. **Frontend (`app/src/store/workspace.tsx` + `app/src/pages/Work.tsx`):**
+     - Em `workspace.tsx`, ao receber `task-updated` no WebSocket, exibir toast quando uma tarefa migrar para `review` (`toast.success('Tarefa concluída pela IA → Aguardando aprovação')`).
+     - Em `Work.tsx` (`WorkCard`), exibir prévia enxuta (1–2 linhas truncadas) de `item.result` quando presente nos cards em `Aguardando aprovação` (`review`) / `Concluído` (`done`).
+
+### [06/11/2026] E13 — Conclusão automática de tarefas (fecha a B3 por outro caminho)
+
+**Problema:** `dispatchWorkItem` movia a tarefa para `doing` e digitava a instrução na CLI, mas nada a levava a `review` quando a IA terminava. As CLIs interativas continuam abertas, então não há "fim de processo": a conclusão tem de ser INFERIDA.
+
+**Implementação:**
+- `core/src/task-monitor.js` (novo): `createTaskMonitor` com relógio/timers injetáveis. Gatilhos, em ordem: (1) **marcador** — linha com SOMENTE `[TAREFA_CONCLUIDA]` (aceita bordas/bullets de TUI); (2) **exit** da sessão (código ≠ 0 vira `[Aviso]` no resultado e a tarefa vai para `review`, não `failed`, pois o front não tem coluna `failed`); (3) **silêncio** de 4,5 s depois de resposta real (≥ 20 caracteres úteis), exceto se o fim da saída for um prompt de confirmação ("Trust this folder", `[y/n]`, "Esc to cancel"...); (4) **PowerShell**: volta do prompt `PS ...>` conclui em 600 ms.
+- **Armadilha do eco:** o terminal repete o que foi digitado. A instrução pede "a palavra TAREFA_CONCLUIDA entre colchetes" (nunca o marcador já entre colchetes), o monitor ignora a saída dos primeiros 1,5 s e só aceita o marcador sozinho numa linha. No PowerShell o sufixo não é enviado (a instrução vira comando).
+- **Prompt bloqueante obsoleto (achado nos testes):** o texto do prompt permanece no buffer (o `stripAnsi` remove os códigos de limpar tela), o que bloquearia para sempre. Agora ele só bloqueia se vieram ≤ 40 caracteres de conteúdo depois dele; redesenhado no fim, volta a bloquear.
+- `orchestrator.js`: `startTaskMonitor` ANTES de digitar; `trackedBroadcast` alimenta o monitor (output/exit); `autoCompleteTask` só conclui se a tarefa AINDA estiver em `doing` (não sobrescreve decisão do usuário), registra o evento `complete` antes do broadcast e chama `completeWorkItem(..., { auto: true, reason })`; `completeWorkItem` cancela monitores da tarefa (conclusão manual) e inclui `auto`/`reason` no evento `task-updated`; nova tarefa na mesma sessão substitui o monitor da anterior (a antiga fica `doing` até o usuário decidir). Variável opcional `VERTICE_IDLE_COMPLETE_MS` ajusta o silêncio.
+- **Frontend:** `WorkItem.result?`; toast "Tarefa concluída pela IA → Aguardando aprovação" só quando o evento traz `auto: true` (conclusão manual não duplica); card em `review`/`done` mostra as 2 últimas linhas do resultado (`.work-card__result`, completo no `title`).
+- **Verificação:** monitor com relógio simulado (23 casos: eco ignorado, palavra sem colchetes ≠ marcador, marcador no meio de frase ≠ marcador, borda de TUI, silêncio e reinício do timer, spinner, prompts bloqueantes e liberação, PowerShell, exit 0/1/imediato, cancelamento, conclui 1x, ANSI/CR/duplicatas/limite 1500); ligação ao orquestrador extraindo o código real (marcador, silêncio, exit, usuário já moveu a tarefa → não sobrescreve, cancelamento manual, segunda tarefa na sessão, sem reconclusão); `completeWorkItem` real com banco temporário (review, resultado salvo, agente `idle` só quando não há outra `doing`, flag `auto` só no automático); `tsc -b` e `eslint .` exit 0.
+- **NÃO verificado:** nenhuma CLI real (PTY e login indisponíveis no sandbox). Os padrões de prompt, os tempos e a obediência de cada IA ao pedido do marcador são HEURÍSTICAS: uma CLI que fique quieta >4,5 s "pensando" pode ser concluída cedo; uma que ignore o pedido só conclui por silêncio. Ajustar `idleMs`/`echoMs` com o uso real. A saída ainda traz ruído de TUI (bordas, rodapés). Alterações NÃO commitadas.

@@ -219,7 +219,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
             },
           }))
         } else if ((event.type === 'workspace-updated' || event.type === 'task-updated') && event.snapshot) {
-          applySnapshot(event.snapshot as WorkspaceSnapshot)
+          const snapshot = event.snapshot as WorkspaceSnapshot
+          // `auto`: a IA concluiu a tarefa (detecção do core). Conclusões manuais não geram este aviso.
+          if (event.type === 'task-updated' && event.auto === true) {
+            const finished = snapshot.workItems.find((item) => item.id === event.workItemId)
+            toast.success(finished ? `Tarefa concluída pela IA → Aguardando aprovação: ${finished.title}` : 'Tarefa concluída pela IA → Aguardando aprovação')
+          }
+          applySnapshot(snapshot)
         } else if (event.type === 'exit' || event.type === 'session-ended') {
           setLiveSessions((current) => {
             const entry = Object.entries(current).find(([, session]) => session.id === event.sessionId)

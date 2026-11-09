@@ -55,6 +55,8 @@ export interface WorkItem {
   assigneeId?: string
   goalId?: string
   priority: WorkPriority
+  /** Saída resumida da IA ao concluir (preenchida pelo core ao ir para review). */
+  result?: string
 }
 
 export interface Project {

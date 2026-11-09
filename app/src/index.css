@@ -623,3 +623,5 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .cli-manual { color: var(--text-secondary); font-family: var(--font-mono); font-size: 8px; }
 .org-hint { margin-top: 10px; color: var(--text-secondary); font-size: 10px; line-height: 1.5; }
 .install-log { max-height: 220px; overflow-y: auto; padding: 12px 14px; border: 1px solid var(--border-subtle); border-radius: 7px; background: oklch(0.18 0.006 255); font-family: var(--font-mono); font-size: 10px; line-height: 1.6; }
+
+.work-card__result { margin: 8px 0 0; font-size: 10px; line-height: 1.45; color: var(--text-secondary); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }

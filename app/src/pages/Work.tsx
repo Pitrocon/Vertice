@@ -77,6 +77,8 @@ export function WorkPage() {
 
 function WorkCard({ item, agentName, goalTitle, onMove }: { item: WorkItem; agentName?: string; goalTitle?: string; onMove: (status: WorkStatus) => void }) {
   const index = workStatusOrder.indexOf(item.status)
+  // Antes de aprovar, o gestor vê o que a IA entregou (últimas linhas do resultado).
+  const resultPreview = (item.status === 'review' || item.status === 'done') && item.result ? summarizeResult(item.result) : ''
   return (
     <article className="work-card">
       <div className="work-card__top">
@@ -87,12 +89,18 @@ function WorkCard({ item, agentName, goalTitle, onMove }: { item: WorkItem; agen
         </div>
       </div>
       <strong>{item.title}</strong>
+      {resultPreview && <p className="work-card__result" title={item.result}>→ {resultPreview}</p>}
       <footer>
         {agentName && <span className="work-card__assignee">{agentName}</span>}
         {goalTitle && <small>{goalTitle}</small>}
       </footer>
     </article>
   )
+}
+
+function summarizeResult(result: string) {
+  const text = result.split('\n').map((line) => line.trim()).filter(Boolean).slice(-2).join(' · ')
+  return text.length > 140 ? `${text.slice(0, 137)}…` : text
 }
 
 function NewIssueDialog({ onClose, onCreate }: { onClose: () => void; onCreate: (input: { title: string; assigneeId?: string; goalId?: string; priority: WorkPriority }) => void }) {

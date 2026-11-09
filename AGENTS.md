@@ -44,7 +44,7 @@ cd app  && npm install && npm run dev   # frontend
 
 ## O que ainda NÃO é automático / simulado
 
-- Detecção automática de conclusão de tarefa (B3): preparada, mas exige CLI de IA autenticada; hoje a conclusão é manual (mover para review/done)
+- Conclusão automática de tarefa (B3/E13): INFERIDA por heurística no terminal interativo (marcador `[TAREFA_CONCLUIDA]`, fim da sessão ou silêncio após a resposta); não foi validada com uma CLI real e pode concluir cedo ou tarde demais. Por isso a tarefa vai para "Aguardando aprovação", etapa de revisão humana
 - Modo offline (core desligado): o app mostra o banner "AMBIENTE DE DEMONSTRAÇÃO" e opera com dados locais simulados
 - Confinamento é por caminho (cwd), não por sandbox de SO: um processo de CLI já iniciado pode acessar o disco conforme as permissões do usuário Windows (ver F2 em `tasks-agentes.md`)
 
@@ -61,7 +61,7 @@ cd app  && npm install && npm run dev   # frontend
 Itens 1 a 5 do roadmap original (persistência SQLite, subagentes reais, fila de tarefas, confinamento, empacotamento) estão implementados. Pendentes:
 
 1. Gerar e validar o instalador Electron (`npm run dist`) numa máquina Windows com Build Tools e testar em máquina limpa
-2. B3: detecção automática de conclusão de tarefas (exige login das CLIs; ver F1)
+2. Validar a conclusão automática (E13) com CLIs reais autenticadas e ajustar os tempos (`task-monitor.js`)
 3. Autenticação das CLIs com segredos no Windows Credential Manager (F1)
 4. Confinamento de processo em nível de SO (F2)
 5. Atualização de manifestos de CLI via git

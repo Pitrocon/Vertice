@@ -1,6 +1,7 @@
 ﻿import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { RUNTIME_CATALOG, resolveCommand } from './runtimes.js'
+import { createTaskMonitor, COMPLETION_INSTRUCTION } from './task-monitor.js'
 import { startSession, writeToSession, listActiveSessions } from './sessions.js'
 import { assertAllowedCwd, WorkspaceError } from './workspace.js'
 import {
@@ -55,6 +56,7 @@ function trackedBroadcast(event) {
   if (event?.type === 'output' && event.sessionId) sessionActivity.set(event.sessionId, Date.now())
   else if (event?.type === 'exit' && event.sessionId) sessionActivity.delete(event.sessionId)
   broadcastFn(event)
+  feedTaskMonitor(event)
 }
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -109,6 +111,55 @@ async function ensureAgentSession(agent, snapshot) {
   return { sessionId: session.id, created: true }
 }
 
+// --- Conclusão automática (E13 / B3) ------------------------------------------
+// Cada tarefa despachada ganha um monitor (task-monitor.js) que observa a saída da sessão e, quando a
+// IA termina, move a tarefa de "doing" para "review" (Aguardando aprovação). É inferência por
+// heurística (marcador, fim da sessão, silêncio), não um sinal garantido da CLI.
+const taskMonitors = new Map() // sessionId -> { monitor, workItemId }
+
+function startTaskMonitor(sessionId, workItemId, runtimeId) {
+  // Nova tarefa na mesma sessão: a anterior deixa de ser observada (continua "doing" até o usuário decidir).
+  taskMonitors.get(sessionId)?.monitor.cancel()
+  const monitor = createTaskMonitor({
+    runtimeId,
+    idleMs: Number(process.env.VERTICE_IDLE_COMPLETE_MS) || undefined,
+    onComplete: (outcome) => { void autoCompleteTask(sessionId, workItemId, outcome) },
+  })
+  taskMonitors.set(sessionId, { monitor, workItemId })
+}
+
+function cancelTaskMonitor(sessionId) {
+  taskMonitors.get(sessionId)?.monitor.cancel()
+  taskMonitors.delete(sessionId)
+}
+
+function cancelTaskMonitorsFor(workItemId) {
+  for (const [sessionId, entry] of taskMonitors) {
+    if (entry.workItemId === workItemId) cancelTaskMonitor(sessionId)
+  }
+}
+
+function feedTaskMonitor(event) {
+  const entry = event?.sessionId ? taskMonitors.get(event.sessionId) : null
+  if (!entry) return
+  if (event.type === 'output') entry.monitor.feed(String(event.data ?? ''))
+  else if (event.type === 'exit') entry.monitor.exit(event.exitCode)
+}
+
+async function autoCompleteTask(sessionId, workItemId, { reason, result }) {
+  const entry = taskMonitors.get(sessionId)
+  if (entry?.workItemId === workItemId) taskMonitors.delete(sessionId)
+  try {
+    const item = getWorkspaceSnapshot().workItems.find((w) => w.id === workItemId)
+    // Se o usuário já moveu ou concluiu a tarefa à mão, não sobrescreve a decisão dele.
+    if (!item || item.status !== 'doing') return
+    recordEvent(item.assigneeId ?? null, `Tarefa concluída pelo agente e movida para Aguardando aprovação: ${item.title}`, 'complete')
+    await completeWorkItem(workItemId, { result, auto: true, reason })
+  } catch (error) {
+    console.error('[orchestrator] falha ao concluir a tarefa automaticamente:', error)
+  }
+}
+
 /**
  * Despacha um work_item: ao entrar em "doing" com responsavel, garante a sessao real
  * do agente e envia o prompt da tarefa. Marca a tarefa e o agente, emite "task-updated".
@@ -127,7 +178,9 @@ export async function dispatchWorkItem(workItemId) {
 
   // Instrução em UMA linha: num terminal interativo cada quebra de linha viraria um Enter e enviaria
   // o prompt picado, em várias submissões.
-  const instruction = [agent.prompt, `Tarefa: ${item.title}`]
+  const runtimeId = runtimeIdForAgent(agent)
+  // O PowerShell digita a instrução como COMANDO: o pedido do marcador só vale para CLIs de IA.
+  const instruction = [agent.prompt, `Tarefa: ${item.title}`, runtimeId === 'powershell' ? '' : COMPLETION_INSTRUCTION]
     .filter(Boolean)
     .join(' ')
     .replace(/\s*[\r\n]+\s*/g, ' ')
@@ -137,10 +190,12 @@ export async function dispatchWorkItem(workItemId) {
   if (created) await waitForSessionReady(sessionId)
 
   const closedMessage = 'A sessão do agente foi encerrada antes de receber a tarefa.'
-  if (!writeToSession(sessionId, instruction)) throw new Error(closedMessage)
+  // O monitor nasce ANTES de digitar: o eco do que for digitado cai na janela de eco e é ignorado.
+  startTaskMonitor(sessionId, item.id, runtimeId)
+  if (!writeToSession(sessionId, instruction)) { cancelTaskMonitor(sessionId); throw new Error(closedMessage) }
   // Enter em escrita separada: TUIs tratam "texto + Enter" colados como colagem, não como envio.
   await delay(200)
-  if (!writeToSession(sessionId, '\r')) throw new Error(closedMessage)
+  if (!writeToSession(sessionId, '\r')) { cancelTaskMonitor(sessionId); throw new Error(closedMessage) }
 
   patchWorkItem(item.id, { status: 'doing' })
   patchAgent(agent.id, { status: 'working', task: item.title })
@@ -160,14 +215,12 @@ export function canDelegate(sourceId, targetId) {
   return connections.some((c) => c.source === sourceId && c.target === targetId)
 }
 
-// --- B3 (PREPARADO, DESATIVADO) ------------------------------------------
-// Deteccao automatica de conclusao via modo nao interativo da CLI.
-// Requer a CLI instalada E AUTENTICADA (ex.: claude login). Nesta maquina as
-// CLIs de IA ainda nao estao autenticadas, entao a conclusao continua sendo
-// marcada manualmente (mover o card para "review"/"done" na UI). Quando o login
-// estiver disponivel, implementar aqui a execucao com prompt unico + exit code/JSON
-// e chamar completeWorkItem() com result/error. NAO apresentar como real ate validar.
-export async function completeWorkItem(workItemId, { result, error } = {}) {
+// --- Conclusao da tarefa ----------------------------------------------------------
+// Chamada pelo usuario (mover o card para "review") ou pela deteccao automatica (E13, acima), que
+// passa `auto: true`. A deteccao e heuristica e AINDA NAO foi validada com uma CLI real autenticada.
+// Um modo nao interativo (prompt unico + exit code/JSON) seria uma alternativa mais confiavel (F1).
+export async function completeWorkItem(workItemId, { result, error, auto = false, reason } = {}) {
+  cancelTaskMonitorsFor(workItemId) // conclusão manual (ou automática): para de observar a tarefa
   const status = error ? 'failed' : 'review'
   const updated = patchWorkItem(workItemId, { status, result: result ?? null, error: error ?? null })
   if (!updated) return { ok: false, error: 'Tarefa não encontrada.' }
@@ -181,7 +234,8 @@ export async function completeWorkItem(workItemId, { result, error } = {}) {
   }
 
   const snapshot = getWorkspaceSnapshot()
-  broadcastFn({ type: 'task-updated', workItemId, snapshot })
+  // `auto` avisa o frontend que foi a IA (e não o usuário) quem concluiu: ele mostra um aviso.
+  broadcastFn({ type: 'task-updated', workItemId, snapshot, ...(auto ? { auto: true, reason } : {}) })
   return { ok: true, status }
 }
 
