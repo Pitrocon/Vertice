@@ -2,6 +2,14 @@ import type { Agent, AgentConnection, ActivityEvent, Goal, WorkItem, Project } f
 
 const BASE = 'http://localhost:7845'
 
+// Token da execução: só existe no app empacotado (o preload do Electron o expõe em window.vertice).
+// Em desenvolvimento (Vite em localhost) o core já confia na origem e nenhum token é necessário.
+const APP_TOKEN: string = (window as unknown as { vertice?: { token?: string } }).vertice?.token ?? ''
+
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  return APP_TOKEN ? { ...extra, 'X-Vertice-Token': APP_TOKEN } : { ...extra }
+}
+
 export interface DetectedRuntime {
   id: string
   name: string
@@ -50,7 +58,7 @@ export interface WorkspaceSnapshot {
 
 async function get<T>(path: string): Promise<T | null> {
   try {
-    const res = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(8000) })
+    const res = await fetch(`${BASE}${path}`, { headers: authHeaders(), signal: AbortSignal.timeout(8000) })
     if (!res.ok) return null
     return (await res.json()) as T
   } catch {
@@ -62,7 +70,7 @@ async function request<T>(method: 'POST' | 'PATCH' | 'DELETE', path: string, bod
   try {
     const res = await fetch(`${BASE}${path}`, {
       method,
-      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      headers: authHeaders(body !== undefined ? { 'Content-Type': 'application/json' } : undefined),
       body: body !== undefined ? JSON.stringify(body) : undefined,
     })
     if (!res.ok) return null
@@ -100,7 +108,7 @@ export const api = {
     try {
       const res = await fetch(`${BASE}/api/projects`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(input),
       })
       const data = await res.json().catch(() => null)
@@ -206,7 +214,7 @@ export const api = {
 
 export function connectEvents(onEvent: (event: Record<string, unknown>) => void): WebSocket | null {
   try {
-    const socket = new WebSocket('ws://localhost:7845/ws')
+    const socket = new WebSocket(`ws://localhost:7845/ws${APP_TOKEN ? `?token=${encodeURIComponent(APP_TOKEN)}` : ''}`)
     socket.onmessage = (raw) => {
       try {
         onEvent(JSON.parse(String(raw.data)))

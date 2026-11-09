@@ -1,4 +1,4 @@
-﻿import { resolve, sep, isAbsolute, parse as parsePath } from 'node:path'
+﻿import { resolve, sep, isAbsolute, dirname, parse as parsePath } from 'node:path'
 import { realpathSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 
@@ -89,8 +89,18 @@ export function assertSafeProjectPath(rawPath) {
     if (cmp === normalizeForCompare(stripTrailingSep(root)) || cmp === normalizeForCompare(root)) {
       throw new WorkspaceError('A raiz de uma unidade não pode ser um workspace de projeto.')
     }
-    if (cmp === normalizeForCompare(stripTrailingSep(homedir()))) {
+    const homeCmp = normalizeForCompare(stripTrailingSep(homedir()))
+    if (cmp === homeCmp) {
       throw new WorkspaceError('A pasta pessoal inteira não pode ser um workspace; escolha uma subpasta dedicada ao projeto.')
+    }
+    // Pasta que CONTÉM a pasta pessoal (ex.: C:\Users) daria acesso a todos os perfis.
+    if (homeCmp.startsWith(cmp + sep)) {
+      throw new WorkspaceError('Essa pasta contém a sua pasta pessoal (e os perfis de outros usuários); escolha uma subpasta dedicada ao projeto.')
+    }
+    // Dentro do diretório de perfis (ex.: C:\Users\Public ou o perfil de outro usuário), mas fora da sua pasta.
+    const profilesCmp = normalizeForCompare(stripTrailingSep(dirname(homedir())))
+    if (cmp.startsWith(profilesCmp + sep) && !cmp.startsWith(homeCmp + sep)) {
+      throw new WorkspaceError('Pastas de outros usuários ou compartilhadas (ex.: Public) não podem ser workspace; use uma subpasta da sua pasta pessoal ou outra unidade.')
     }
     const systemDirs = [process.env.SystemRoot, process.env.windir, process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.ProgramData]
       .filter(Boolean)

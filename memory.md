@@ -270,3 +270,17 @@ Agente `PKG` (`vertice-runtimes-pacote`), skill `vertice-empacotamento`. Escolhi
 
 **Verificação:** (core, banco temporário, servidor real) boot limpo; sessão sem projeto → 400; projeto em `C:\Windows\System32` → 403; raiz `C:\` → 403; projeto válido → 200, ativo e autorizado; `%TEMP%\…` expandido; delegação com runtime não aprovado → 403 e 0 agentes; delegação do zero → 200 criando Gerente + subagente + conexão + tarefa; clear → tudo 0 com settings; demo → 2/5/4/2/6; clear de novo. (app) `tsc -b` e `eslint .` exit 0 (xterm já instalado). NÃO verificado: comportamento no navegador (5 telas vazias, criar projeto → agente → sessão real), `npm run build` e sessão PTY (sandbox).
 - Alterações NÃO commitadas.
+
+### [06/11/2026] E10 — Revisão de código: correções de segurança do serviço local
+
+Revisão de leitura do core/app encontrou, e CONFIRMOU rodando contra o servidor real, 3 falhas de segurança (corrigidas):
+1. **WebSocket sem checagem de Origin:** qualquer site aberto no navegador conectava em `ws://localhost:7845/ws`, lia a saída dos terminais e, com o id da sessão (vazado em `session-started`), podia enviar input (execução de comandos).
+2. **POST "simples" sem corpo passava pelo CORS:** `POST /api/workspace/clear` com `Origin: evil.example` apagou o projeto (CORS só impede a LEITURA da resposta). Furo introduzido pela rota `clear` da E9; também valia para `reset`, `activate`, `install`, `dispatch`.
+3. **`assertSafeProjectPath` aceitava `C:\Users` e `C:\Users\Public`:** um projeto ali autorizava trabalho em todos os perfis.
+
+**Correções:** `core/src/security.js` (novo; `checkRequestOrigin`, `isLocalHost`, token com `timingSafeEqual`); middleware global no `index.js` (Host + Origin em toda requisição não-OPTIONS; CORS agora também reflete `file://` quando há token) e `verifyClient` no WebSocket; `workspace.js` recusa pasta que contém o home e pastas do diretório de perfis fora do home; `api.ts` envia `X-Vertice-Token`/`?token=` quando `window.vertice.token` existe; Electron gera o token (`main.js`) e o repassa por `additionalArguments` ao `preload.cjs`. **Bug latente da D2 corrigido:** `preload.js` usava `import` com `"type": "module"`; preloads em sandbox (padrão) exigem CommonJS → renomeado para `preload.cjs` e `package.json` atualizado.
+
+**Verificação (core real, banco temporário, 14/14 OK):** sem Origin → 200; `localhost:3000` → 200; `evil.example` POST/GET → 403; `null` sem token / token errado → 403; `null` com token → 200; Host `evil.example` → 403; WS `evil.example` e `null` sem token → 401; WS sem Origin / localhost / `null`+token → conecta. Caminhos: `C:\Users`, `Public` e outro perfil → bloqueados; subpasta do home, `D:\projetos`, `C:\work\app` → aceitos. `tsc -b` e `eslint .` exit 0. NÃO testado: app empacotado (token/preload no Electron real), fluxo no navegador.
+
+**Riscos remanescentes (não corrigidos, ver revisão):** despacho de tarefa envia o prompt com quebras de linha + `\r` imediato (cada `\n` vira Enter); boot espera a detecção de CLIs (`get()` aborta em 8 s); a API não valida enums de status/prioridade/kind; cada chunk do PTY re-renderiza o app via `setTerminalLines`; `deleteAgent` deixa tarefas órfãs; `ensureAgentSession` sem projeto ativo devolve 403 "Caminho ausente"; caminhos com espaço no perfil Windows (`cmd.exe /c`, modo pipe) não testados.
+- Alterações NÃO commitadas.

@@ -22,7 +22,7 @@ Empacota o Vértice como um aplicativo Windows único que, ao abrir:
 ```
 installers/electron/
   main.js        processo main: define VERTICE_DATA_DIR/VERTICE_RUNTIMES_DIR, sobe o core, abre a janela
-  preload.js     ponte mínima (contextIsolation ligado, nodeIntegration desligado)
+  preload.cjs    ponte mínima em CommonJS (contextIsolation ligado, nodeIntegration desligado); expõe o token da execução
   package.json   deps do Electron + configuração do electron-builder (alvo NSIS x64)
 ```
 
@@ -65,6 +65,7 @@ npm start
   esse módulo, migrar `core/src/db.js` para `better-sqlite3` (também nativo → rebuild).
 - **`node-pty`:** precisa ser recompilado para o ABI do Electron (`npm run rebuild`).
   Sem isso, o core cai no modo `pipe` (sem interatividade completa de terminal).
+- **Token da execução:** o `main.js` gera um token aleatório a cada abertura (`VERTICE_API_TOKEN`) e o passa à janela por `--vertice-token`; o core só aceita requisições de `file://` que o apresentem (cabeçalho `X-Vertice-Token` / `?token=` no WebSocket). Impede que sites no navegador do usuário falem com o serviço local.
 - **Confinamento:** o empacotamento não altera as regras de segurança do backend
   (`assertAllowedCwd`, runtimes aprovados). Os dados ficam em `%APPDATA%\Vertice`.
 - **Assinatura de código:** adicionar certificado se a TI exigir, antes de distribuir

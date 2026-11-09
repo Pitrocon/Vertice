@@ -264,6 +264,8 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
      - Deixar `initialAgents`, `initialConnections`, `initialGoals`, `initialWorkItems`, `initialProjects` e `initialEvents` vazios por padrão no boot do frontend (ou sincronizar imediatamente com o snapshot vazio do `vertice-core`), mantendo `initialCliRuntimes` intacto.
   - **Aceite:** Ao abrir o app com `vertice-core` rodando, `Agentes` mostra `0` agentes, `Work` mostra `0` tarefas e `0` metas, `Projects` mostra `0` projetos, `Organograma` mostra o canvas limpo (`0 agentes · 0 conexões`) e `CLI's` mostra todas as CLIs reais detectadas e aprovadas. O usuário consegue criar um Projeto, criar um Agente (ou usar "Delegar ao Gerente") e iniciar uma sessão real sem erro 403 ou crash.
 
+- [x] **E10** (CORE + PKG + FRONT — 06/11/2026, revisão de código; testado contra o core real) — **Segurança do serviço local:** (1) WebSocket e HTTP validam Origin/Host (`core/src/security.js`): origens `localhost` e requisições sem Origin passam; `file://`/`null` (app Electron) só com o token da execução; qualquer outra origem → 403 (HTTP) / 401 (WS); Host ≠ localhost → 403 (DNS rebinding). (2) POST sem corpo de sites externos (ex.: `/api/workspace/clear`) deixa de executar. (3) `assertSafeProjectPath` recusa pasta que contém o home (`C:\\Users`) e pastas de outros usuários (`Public`, outros perfis). (4) Electron: token aleatório por execução (`main.js` → `--vertice-token` → `preload.cjs` → `window.vertice.token` → cabeçalho `X-Vertice-Token`/`?token=`); `preload.js` virou `preload.cjs` (preload em sandbox não aceita ESM). PENDENTE: testar o app empacotado (token e preload) numa máquina com Build Tools.
+
 ---
 
 ## Possível trabalho futuro (fora do escopo mínimo de "funcional")

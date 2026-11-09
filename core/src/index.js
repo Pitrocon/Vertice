@@ -9,6 +9,7 @@ import { WebSocketServer } from 'ws'
 import { detectRuntimes, resolveCommand, RUNTIME_CATALOG } from './runtimes.js'
 import { startSession, writeToSession, resizeSession, killSession, listActiveSessions } from './sessions.js'
 import { assertAllowedCwd, assertSafeProjectPath, expandEnvVars, WorkspaceError } from './workspace.js'
+import { checkRequestOrigin, isFileOrigin, isLocalHost, isLocalOrigin, tokenFromRequest } from './security.js'
 import { configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName } from './orchestrator.js'
 import {
   listSessions, listEvents, recordEvent,
@@ -25,15 +26,21 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 7845
 const app = express()
 app.use(express.json())
 
-// CORS restrito a origens locais (frontend Vite / build)
+// Segurança de origem (ver security.js): CORS só não basta, pois POSTs simples sem corpo
+// (ex.: /api/workspace/clear) chegam ao servidor mesmo quando o navegador bloqueia a leitura.
 app.use((req, res, next) => {
   const origin = req.headers.origin
-  if (origin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+  // Defesa contra DNS rebinding: o Host precisa ser o do próprio localhost.
+  if (!isLocalHost(req.headers.host)) return res.status(403).json({ error: 'Host não permitido.' })
+  if (origin && (isLocalOrigin(origin) || (isFileOrigin(origin) && process.env.VERTICE_API_TOKEN))) {
     res.setHeader('Access-Control-Allow-Origin', origin)
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Vertice-Token')
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS')
   }
+  // Preflight não carrega o token (cabeçalhos custom não vão no OPTIONS); a checagem vale na requisição real.
   if (req.method === 'OPTIONS') return res.sendStatus(204)
+  const verdict = checkRequestOrigin({ origin, host: req.headers.host, token: tokenFromRequest(req) })
+  if (!verdict.ok) return res.status(403).json({ error: verdict.reason })
   next()
 })
 
@@ -409,7 +416,17 @@ app.get('/api/events', (_req, res) => {
 })
 
 const server = createServer(app)
-const wss = new WebSocketServer({ server, path: '/ws' })
+// WebSocket não passa por CORS: sem esta checagem, qualquer site aberto no navegador poderia ouvir a
+// saída dos terminais (que inclui o id da sessão) e enviar input a elas.
+const wss = new WebSocketServer({
+  server,
+  path: '/ws',
+  verifyClient: (info) => checkRequestOrigin({
+    origin: info.origin || undefined,
+    host: info.req.headers.host,
+    token: tokenFromRequest(info.req),
+  }).ok,
+})
 
 function broadcast(event) {
   const payload = JSON.stringify(event)

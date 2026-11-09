@@ -26,7 +26,7 @@
     },
     "files": [
       "main.js",
-      "preload.js"
+      "preload.cjs"
     ],
     "extraResources": [
       {

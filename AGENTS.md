@@ -32,6 +32,7 @@ cd app  && npm install && npm run dev   # frontend
 - Streaming de saída via WebSocket; terminal do app envia input para a sessão viva
 - Instalação guiada de CLIs (Claude, Codex, Kimi, GLM/Z.ai, Antigravity, OpenCode; Ollama via winget)
 - Persistência completa em SQLite (`core/data/vertice.db`): projetos, agentes, conexões, metas, tarefas (`work_items`), sessões e eventos, sincronizados em tempo real via REST + WebSocket
+- Segurança do serviço local: o core valida Origin/Host (HTTP e WebSocket) — sites abertos no navegador não conseguem ouvir terminais nem disparar ações; no Electron a janela (`file://`) usa um token por execução
 - Início LIMPO: o core não repovoa dados de demonstração no boot (só as configurações das CLIs). `POST /api/workspace/clear` apaga tudo menos as `settings`; `POST /api/workspace/reset` carrega a demo. Criar um projeto o torna workspace permitido (após validar o caminho: pastas de sistema, raiz de disco e a pasta pessoal inteira são recusadas)
 
 - Confinamento de workspace no backend (`core/src/workspace.js`): cwd fora do workspace permitido → HTTP 403, sem fallback para `homedir()`

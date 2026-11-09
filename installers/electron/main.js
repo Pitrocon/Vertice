@@ -8,6 +8,7 @@ import { app, BrowserWindow, shell } from 'electron'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { existsSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const isPackaged = app.isPackaged
@@ -23,6 +24,11 @@ const APP_INDEX = join(resourcesRoot, 'app', 'dist', 'index.html')
 // Dados do SQLite em %APPDATA%\Vertice (userData), nunca dentro do programa.
 process.env.VERTICE_DATA_DIR = join(app.getPath('userData'), 'data')
 process.env.VERTICE_RUNTIMES_DIR = RUNTIMES_DIR
+
+// Token desta execução: o core só aceita requisições da janela (origem file://) que o apresentem.
+// Vai ao renderer apenas via additionalArguments -> preload (sites abertos no navegador não o conhecem).
+const API_TOKEN = randomBytes(32).toString('hex')
+process.env.VERTICE_API_TOKEN = API_TOKEN
 
 let mainWindow = null
 
@@ -46,7 +52,8 @@ function createWindow() {
     title: 'Vértice',
     show: false,
     webPreferences: {
-      preload: join(__dirname, 'preload.js'),
+      preload: join(__dirname, 'preload.cjs'),
+      additionalArguments: [`--vertice-token=${API_TOKEN}`],
       contextIsolation: true,
       nodeIntegration: false,
     },
