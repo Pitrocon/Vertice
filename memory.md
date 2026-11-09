@@ -206,3 +206,67 @@ Agente `PKG` (`vertice-runtimes-pacote`), skill `vertice-empacotamento`. Escolhi
 - **E6 (2) — CORREÇÃO DA PREMISSA:** conferido no registro npm: `electron@45.2.1` EXISTE (latest 45.2.3; Node 24 embutido, necessário para `node:sqlite`), então NÃO foi feito downgrade para `^35`. O pacote inexistente era `electron-builder@27.0.1` (404; latest 26.18.0, a 27 só tem alpha) — erro meu de D2, vindo de um snippet de busca. Trocado por `26.18.0`. `@electron/rebuild@4.0.1` existe.
 - **Verificação:** `tsc -b` e `eslint .` exit 0. Contra o core real (porta 7845): `cwd=C:\Windows` → 403 e traversal → 403 (asserções novas validadas). NÃO verificado: sessão válida (500 por `EPERM` ao criar `%USERPROFILE%\vertice-workspaces\atlas`, e o spawn do PTY travou — ambos limites do sandbox), `/api/runtimes` (detecção dá timeout) e portanto o `smoke-core.ps1` completo. Rodar o smoke numa máquina normal.
 - **Commit:** alterações pendentes dos Blocos D/E commitadas em commits separados por escopo (Conventional Commits).
+
+### [06/11/2026] E7 — Navegação por teclado em menus interativos de CLIs (parcial) + E8 aberta
+
+- **`workspace.tsx`:** novo `sendRawKey(data)` (envia bytes/ANSI ao PTY da sessão viva do agente selecionado, sem `\r` extra). `runCommand` agora repassa à sessão viva qualquer entrada (inclusive `/login`, `/trust`), exceto os 6 comandos internos reservados (`RESERVED_COMMANDS`: `/help /status /agents /create /delegate /clear`).
+- **`TerminalPanel.tsx`:** props `hasLiveSession` e `onRawKey`. Com sessão real: a área de saída (`tabIndex=0`, `role="log"`) e o input VAZIO capturam `↑ ↓ ← → Enter Esc Tab Espaço` e `Ctrl+C`, enviando `\x1b[A/B/D/C`, `\r`, `\x1b`, `\t`, ` `, `\x03`. Na área de saída também são repassados caracteres simples (ex.: `y`/`n`). Decisões de acessibilidade/usabilidade: `Ctrl+C` com texto selecionado continua sendo "copiar"; `Shift+Tab` não é interceptado (permite sair do terminal pelo teclado); com texto digitado no input as teclas editam o comando normalmente; `Ctrl+C` no input interrompe a CLI mesmo com texto. Barra de controles clicáveis (`↑ ↓ Enter ↵ Esc Ctrl+C`) visível só com sessão real; CSS `.terminal-keys*` (azul = ação) e foco visível.
+- **`Organograma.tsx`:** liga `hasLiveSession` e `onRawKey={workspace.sendRawKey}`.
+- **Verificação:** `tsc -b` e `eslint .` exit 0; mapeamento testado extraindo `toPtySequence` do próprio arquivo e transpilando (15/15 casos OK, incluindo copiar com seleção e Shift+Tab livre). NÃO testado: sessão real com CLI (sandbox sem PTY/CLI autenticada) nem o comportamento visual no navegador.
+- **LIMITAÇÃO CONHECIDA (→ E8):** a saída da sessão ainda passa por `stripAnsi` e vira linhas de texto (`appendSessionOutput`). A entrada por setas/Enter funciona, mas o destaque da opção selecionada não é renderizado e menus redesenhados aparecem repetidos. Por isso a E7 ficou `[~]` e foi aberta a E8 (renderizar com `@xterm/xterm`, como já sugerido na skill `vertice-frontend`).
+- Alterações NÃO commitadas (commit só sob pedido).
+
+### [06/11/2026] E8 — Terminal com emulador xterm.js (código pronto, NÃO instalado/testado)
+
+- **Dependências** (`app/package.json`, versão exata, par estável atual conferido no registro npm): `@xterm/xterm@6.0.0` e `@xterm/addon-fit@0.11.0`. O `npm install` FALHOU no sandbox (`ENOTFOUND registry.npmjs.org`, shell sem rede), então as deps foram declaradas à mão e o `package-lock.json` NÃO foi atualizado → é obrigatório rodar `npm install` em `app/` antes de `tsc`/`build` (um `npm ci` falharia).
+- **`components/LiveTerminal.tsx` (NOVO):** `Terminal` + `FitAddon`, fundo transparente (`allowTransparency`) e cores hex aproximadas da paleta (o xterm não lê `oklch`). Faz replay do buffer ao montar, assina novos chunks (`data === null` = sessão nova → `term.reset()`), `onData` → PTY, `onResize` (debounce 120 ms; também notifica o tamanho inicial porque o PTY nasce 120x30) e `ResizeObserver` para refit (ignora contêiner com tamanho 0). Teclado: `Ctrl+C` com seleção copia; `Shift+Tab` sai do terminal (não é capturado).
+- **`TerminalPanel.tsx`:** com sessão real (`hasLiveSession` + props do emulador) renderiza `LiveTerminal` no lugar da lista de linhas; offline/simulação continua com linhas. Barra de teclas e campo de comando da E7 mantidos. Removidos `handleOutputKeyDown` e o parâmetro `forwardPrintable` (o xterm trata o teclado). O arquivo estava SEM o `import ... from 'react'` quando fui editar (alterado fora da minha sessão); reescrito completo com os imports corretos.
+- **`workspace.tsx`:** buffer bruto por agente em `useRef` (até 200 000 chars, descarta chunks antigos), `getRawOutput`, `subscribeRawOutput`, `resizeAgentSession`; saída bruta alimenta o buffer além das linhas (mantidas para o fallback e para após o fim da sessão). **Correção de bug correlato:** o evento `session-started` do core nunca era tratado, então sessões abertas pelo despachante (tarefa → `doing`) não apareciam como vivas na UI; agora registram `liveSessions` e limpam o buffer.
+- **`api.ts`:** `resizeSession` (rota `POST /api/sessions/:id/resize` já existia).
+- **Verificação:** `eslint .` exit 0. `tsc -b`: único erro é módulo `@xterm/*` não encontrado (+ dois `TS7006` consequentes); o restante compila. A API usada (`onData`, `onResize`, `hasSelection`, `reset`, `loadAddon`, `open`, `attachCustomKeyEventHandler`, `FitAddon.fit`) foi conferida contra os `.d.ts` publicados em `@xterm/xterm@6.0.0` e `@xterm/addon-fit@0.11.0`. NÃO verificado: build, render, resize e navegação por setas com CLI real.
+- **Limites conhecidos:** o replay após trocar de agente reescreve o buffer cortado por chunk (pode partir uma sequência de escape no limite de 200 KB); depois que a sessão termina a tela volta para a lista de linhas (texto sem ANSI).
+- Alterações NÃO commitadas.
+
+
+### [06/11/2026] Auditoria E7/E8 (Concluídos) + Nova Task E9 (Operação Limpa do Zero mantendo apenas CLIs)
+
+- **Auditoria e validação de E7 + E8 na máquina com rede:**
+  - Executado `npm install` em `vertice/app` → `@xterm/xterm@6.0.0` e `@xterm/addon-fit@0.11.0` instalados com sucesso (0 vulnerabilidades, `package-lock.json` atualizado).
+  - Executado `npm run build` (`tsc -b && vite build`) → compilou com **0 erros** em 2.64s.
+  - Executado `npm run lint` (`eslint .`) → **0 erros**.
+  - Executado `vertice\.agents\skills\vertice-verificacao\scripts\smoke-core.ps1` contra `vertice-core` → **12/12 etapas `[OK]`** (incluindo sessões confinadas e bloqueio 403 de `C:\Windows` e `..`).
+  - **E7 e E8 marcadas como `[x]`** em `tasks-agentes.md` e `tasks.md`.
+
+- **Próximo passo — Task E9 (`6.7` em `tasks.md`): Limpar todas as infos de Agentes, Projetos, Tarefas e Workspace mantendo apenas as CLIs (para simular uma operação real do zero):**
+  1. **Backend (`core/src/db.js` + `core/src/index.js`):**
+     - Hoje `seedInitialData(false)` roda em todo boot e checa `COUNT(*) === 0` em `projects`, `agents`, `connections`, `goals`, `work_items` e `allowed_workspaces`, reinserindo todos os dados de demonstração se o banco for limpo.
+     - **Ação:** Criar `clearWorkspaceData()` em `db.js` que apaga `projects`, `agents`, `connections`, `goals`, `work_items`, `allowed_workspaces`, `events` e `sessions` mantendo apenas `settings` (`approvedRuntimes` e `policies` das CLIs). Ajustar `seedInitialData(false)` para **não** repopular agentes/projetos/tarefas/workspaces (garantindo apenas `settings` das CLIs), limpar `core/data/vertice.db` e expor `POST /api/workspace/clear` em `core/src/index.js` (mantendo `POST /api/workspace/reset` para restaurar dados de demo se desejado).
+  2. **Criação do primeiro Projeto (`core/src/db.js` + `core/src/index.js`):**
+     - Ao criar um projeto em `POST /api/projects` (`createProject`), se não houver projeto ativo ainda (`SELECT COUNT(*) FROM projects WHERE active = 1` for `0`), criá-lo já com `active = 1`.
+     - Registrar automaticamente o `path` do projeto criado/ativado em `allowed_workspaces` (`addAllowedWorkspace`) para que `assertAllowedCwd` autorize sessões reais no novo projeto sem erro 403.
+  3. **Criação do primeiro Agente / Gerente quando `agents = []` (`app/src/components/AgentDialogs.tsx` + `app/src/store/workspace.tsx` + `core/src/index.js`):**
+     - Em `CreateAgentDialog`, quando `agents.length === 0` (ou como opção explícita no `<select>` de Supervisor), exibir `<option value="">Nenhum (Agente Principal / Gerente)</option>`. Quando `parentId` for vazio (`''`), criar o agente com `kind: 'manager'`, `x: 280, y: 0`, sem `createdBy` e sem criar conexão órfã.
+     - Em `delegateToManager` (`workspace.tsx`) e `POST /api/orchestrator/delegate` (`core/src/index.js`), se ainda não existir um agente `manager` quando o usuário clicar em "Delegar ao Gerente", auto-criar o `Gerente` (`id: 'gerente'`, `kind: 'manager'`, `runtime: 'Claude Code'`, `model: 'claude-sonnet'`) antes de criar a equipe subordinada (evitando crash `manager is undefined` ou 404).
+  4. **Sincronização do estado limpo no Frontend (`app/src/store/workspace.tsx` + `app/src/data/initial.ts`):**
+     - Em `applySnapshot` (`workspace.tsx` linha 132), trocar `if (snapshot.events?.length) setEvents(snapshot.events)` por `if (snapshot.events) setEvents(snapshot.events)` e atualizar `selectedId` quando `snapshot.agents` estiver vazio (`setSelectedId(snapshot.agents[0]?.id ?? null)`).
+     - Iniciar `initialAgents`, `initialConnections`, `initialGoals`, `initialWorkItems`, `initialProjects` e `initialEvents` vazios por padrão (ou adicionar ação `clearWorkspace` no modal de Preferências / `Ctrl+K`), mantendo `initialCliRuntimes` intacto.
+
+### [06/11/2026] E9 — Estado limpo / operação do zero (mantendo só a aba CLI's)
+
+**Decisão de modelo:** o boot NÃO repovoa mais dados de demonstração. Um banco novo (ou limpo) tem 0 projetos/agentes/conexões/metas/tarefas/workspaces permitidos e só as `settings` das CLIs. A demo virou ação explícita. `meta.workspace_mode` = `clean` | `demo` (bancos antigos são classificados pelo conteúdo, sem alterar dados).
+
+**Core (`db.js`, `workspace.js`, `index.js`):**
+- Removido o auto-reseed (`seedInitialData(false)` no boot e o seed de `allowed_workspaces` na migração v1). `seedSettings()` garante só `approvedRuntimes`/`policies`.
+- `clearWorkspaceData()` apaga projetos, agentes, conexões, metas, tarefas, `allowed_workspaces`, eventos e histórico de sessões; NUNCA toca em `settings`. `loadDemoData()` (antigo `seedInitialData(true)`) carrega a demo e agora PRESERVA `settings` (antes o reset também zerava aprovações das CLIs).
+- Rotas: `POST /api/workspace/clear` (novo; encerra sessões vivas) e `POST /api/workspace/reset` (carrega demo; também encerra sessões).
+- Primeiro projeto nasce ativo (`createProject`); criar/ativar projeto registra o path em `allowed_workspaces` (`allowProjectWorkspace`, idempotente, comparação case-insensitive/barra final).
+- **DECISÃO DE SEGURANÇA:** como o projeto passa a autorizar o próprio diretório, o `POST /api/projects` agora valida o caminho (`assertSafeProjectPath` em `workspace.js`): exige caminho absoluto, expande `%VAR%`, e recusa UNC/dispositivo, `..`, raiz de unidade, a pasta pessoal inteira e Windows/Program Files/ProgramData (e subpastas, resolvendo junctions) com 403. Sem isso, qualquer chamada à API poderia autorizar `C:\Windows` e anular o confinamento. Limitação: não há autenticação na API local; o confinamento continua sendo por caminho (F2).
+- `POST /api/orchestrator/delegate`: sem nenhum gerente, cria o `Gerente` padrão — DEPOIS de validar o time (uma delegação inválida não deixa gerente "fantasma").
+- `POST /api/sessions` sem projeto ativo → 400 com mensagem clara ("Crie um projeto na aba Projects…").
+
+**Frontend:** `applySnapshot` sempre sobrescreve eventos, reajusta `selectedId` (ou `null`) e zera `terminalLines` sem agentes; `createAgent` sem supervisor cria o agente principal (`kind: manager`, `id: 'gerente'` se livre, sem conexão órfã) — `CreateAgentDialog` ganhou a opção "Nenhum (agente principal / Gerente)" quando não há gerente; `delegateToManager` não quebra mais com `agents = []`; `removeAgent` não força `'gerente'`; `addProject` online só mostra o projeto se o core aceitar (toast com o motivo do 403, sem projeto fantasma); `startAgentSession` avisa se não há projeto ativo; nova ação `clearWorkspace` (Preferências + Ctrl+K → "Limpar workspace (operar do zero)", com modal de confirmação); estado vazio em Projects. O offline manteve os dados de demonstração (decisão: a task permitia "sincronizar com o snapshot vazio" em vez de esvaziar o `initial.ts`).
+
+**Banco real:** backup em `core/data/vertice.db.bak-20261106-182153` (ignorado pelo Git) e limpeza com `clearWorkspaceData()`: antes proj=2 ag=7 conn=6 goals=2 wi=6 allowed=2 (modo demo) → depois tudo 0, `settings` intactas (`claude,codex,kimi,powershell,antigravity`), e um novo boot continuou vazio.
+
+**Verificação:** (core, banco temporário, servidor real) boot limpo; sessão sem projeto → 400; projeto em `C:\Windows\System32` → 403; raiz `C:\` → 403; projeto válido → 200, ativo e autorizado; `%TEMP%\…` expandido; delegação com runtime não aprovado → 403 e 0 agentes; delegação do zero → 200 criando Gerente + subagente + conexão + tarefa; clear → tudo 0 com settings; demo → 2/5/4/2/6; clear de novo. (app) `tsc -b` e `eslint .` exit 0 (xterm já instalado). NÃO verificado: comportamento no navegador (5 telas vazias, criar projeto → agente → sessão real), `npm run build` e sessão PTY (sandbox).
+- Alterações NÃO commitadas.
