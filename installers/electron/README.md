@@ -14,8 +14,8 @@ Empacota o Vértice como um aplicativo Windows único que, ao abrir:
 
 - Windows x64.
 - Node.js instalado (para rodar `npm`/`electron-builder`).
-- Ferramentas de build nativas (Visual Studio Build Tools com C++), exigidas pelo
-  `@electron/rebuild` ao recompilar o `node-pty` para o ABI do Electron.
+- Não exige Visual Studio Build Tools: o `node-pty@1.1.0` usa N-API e já traz binários
+  pré-compilados (`prebuilds/win32-x64`) compatíveis com o Electron.
 
 ## Estrutura
 
@@ -41,11 +41,9 @@ npm run build
 cd ..\core
 npm install
 
-# 3. Instalar as deps do Electron e recompilar os módulos nativos do core
-#    para o ABI do Electron (node-pty)
+# 3. Instalar as deps do Electron (o postinstall baixa o binário electron.exe)
 cd ..\installers\electron
 npm install
-npm run rebuild
 
 # 4. Gerar o instalador NSIS (saída em installers/electron/out)
 npm run dist
@@ -63,7 +61,13 @@ npm start
 - **`node:sqlite`:** o core usa o módulo nativo embutido do Node. O Electron 45 traz
   Node 24, onde `node:sqlite` existe. Se um downgrade de Electron trouxer um Node sem
   esse módulo, migrar `core/src/db.js` para `better-sqlite3` (também nativo → rebuild).
-- **`node-pty`:** precisa ser recompilado para o ABI do Electron (`npm run rebuild`).
+- **`node-pty`:** usa N-API com binários pré-compilados, então não precisa de rebuild
+  (`npm run rebuild` ficou só como opção caso um dia o pacote deixe de trazer prebuilds).
+- **`node_modules` do core:** o electron-builder ignora `node_modules` dentro de `extraResources`;
+  por isso há uma entrada explícita copiando `core/node_modules` e `"npmRebuild": false`
+  (o app do instalador não tem dependências nativas próprias). Confira, depois de `npm run pack`,
+  que `out\win-unpacked\resources\core\node_modules\express` existe.
+- **Rotas no app empacotado:** a janela abre em `file://`, então o frontend usa `HashRouter`.
   Sem isso, o core cai no modo `pipe` (sem interatividade completa de terminal).
 - **Token da execução:** o `main.js` gera um token aleatório a cada abertura (`VERTICE_API_TOKEN`) e o passa à janela por `--vertice-token`; o core só aceita requisições de `file://` que o apresentem (cabeçalho `X-Vertice-Token` / `?token=` no WebSocket). Impede que sites no navegador do usuário falem com o serviço local.
 - **Confinamento:** o empacotamento não altera as regras de segurança do backend

@@ -7,6 +7,7 @@
   "type": "module",
   "main": "main.js",
   "scripts": {
+    "postinstall": "node node_modules/electron/install.js",
     "start": "electron .",
     "rebuild": "electron-rebuild -f -w ../../core -m ../../core",
     "dist": "electron-builder --win --x64",
@@ -19,6 +20,7 @@
   },
   "build": {
     "appId": "com.vertice.desktop",
+    "npmRebuild": false,
     "productName": "Vértice",
     "artifactName": "Vertice-Setup-${version}.${ext}",
     "directories": {
@@ -32,7 +34,12 @@
       {
         "from": "../../core",
         "to": "core",
-        "filter": ["**/*", "!data/**", "!node_modules/.cache/**"]
+        "filter": ["**/*", "!data/**", "!node_modules/**"]
+      },
+      {
+        "from": "../../core/node_modules",
+        "to": "core/node_modules",
+        "filter": ["**/*", "!.bin/**", "!.cache/**"]
       },
       {
         "from": "../../app/dist",

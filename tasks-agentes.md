@@ -268,6 +268,31 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
 
 - [x] **E11** (CORE + FRONT — 06/11/2026, revisão de código; lógica testada isoladamente e via HTTP; despacho com CLI real NÃO testado) — **Despacho e boot:** (1) `dispatchWorkItem` envia a instrução em UMA linha (quebras viravam Enter e enviavam o prompt picado), espera a CLI de uma sessão NOVA terminar de subir (saída quieta por 800 ms, máx. 10 s) e manda o Enter em escrita separada após 200 ms; se a sessão morrer, falha com mensagem em vez de marcar `doing`. (2) Sem projeto ativo o despacho responde 400 claro (antes 403 "Caminho ausente"). (3) `complete` de tarefa inexistente responde 404 (antes devolvia ok / requisição pendurada). (4) `detectRuntimes` ganhou cache de 20 s + deduplicação de chamadas simultâneas; `GET /api/runtimes?refresh=1` e a instalação ignoram o cache. (5) O boot do frontend aplica o snapshot e abre o WebSocket ANTES da detecção de CLIs (lenta), que agora tem timeout próprio de 90 s (antes abortava em 8 s e as CLIs "sumiam").
 
+- [~] **E12** (PKG + CORE + FRONT — 06/11/2026: APLICADO. Item 1 confirmado por teste (o core encerrava com ReferenceError ao chamar /api/runtimes; agora segue vivo). Itens 2–4 dependem de rodar `npm run pack` e abrir o `Vértice.exe` numa máquina com rede (aceite) — **PRIORIDADE IMEDIATA · FALHAS ENCONTRADAS AO COMPILAR E EXECUTAR O INSTALADOR REAL**) — **Correções para o instalador `Vertice-Setup-0.1.0.exe` (Electron) e `GET /api/runtimes` rodarem de ponta a ponta:**
+  Ao rodar `npm install` + `npm run dist` em `installers/electron` e executar o binário gerado (`out\win-unpacked\Vértice.exe` e `electron .`), a auditoria encontrou **4 bugs reais** (o `node-pty@1.1.0` já usa N-API pré-compilado e rodou nativamente no Electron 45 `ABI=150 Node 24.22.1` sem precisar de C++ Build Tools!):
+  1. **[CRÍTICO — CORE] `ReferenceError: req is not defined` em `GET /api/runtimes` (`core/src/index.js` linhas 57–60):**
+     Introduzido na E11: a assinatura da rota está `app.get('/api/runtimes', async (_req, res) => {` mas na linha 59 chama `req.query.refresh === '1'`. Isso lança `UnhandledPromiseRejectionWarning: ReferenceError: req is not defined at core/src/index.js:59:54` em toda chamada a `/api/runtimes`, travando a detecção de CLIs!
+     - **Correção:** Trocar `async (_req, res)` por `async (req, res)` na linha 57 de `core/src/index.js`.
+  2. **[CRÍTICO — INSTALADOR] `out\win-unpacked\resources\core\node_modules` não é copiado pelo `electron-builder` (`installers/electron/package.json`):**
+     O `electron-builder` exclui `node_modules` por padrão dentro de qualquer item de `extraResources` (`!**/node_modules/**/*`), mesmo com `filter: ["**/*", "!data/**", "!node_modules/.cache/**"]`. Ao abrir o `Vértice.exe` empacotado, o `vertice-core` falha ao subir com:
+     `Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'express' imported from ...\resources\core\src\index.js`.
+     - **Correção:** Adicionar em `extraResources` do `installers/electron/package.json` uma entrada explícita apontando direto para `../../core/node_modules` (ou copiar/declarar as deps):
+       ```json
+       {
+         "from": "../../core/node_modules",
+         "to": "core/node_modules",
+         "filter": ["**/*", "!.bin/**", "!.cache/**"]
+       }
+       ```
+       e adicionar `"npmRebuild": false` no bloco `"build"` (já que `node-pty@1.1.0` usa N-API pré-compilado compatível com o Electron 45 e não há dependências nativas no `installers/electron`).
+  3. **[CRÍTICO — FRONT NO ELECTRON] `<BrowserRouter>` quebra navegação e reload em `file://` (`app/src/main.tsx`):**
+     No Electron (`mainWindow.loadFile(APP_INDEX)`), a janela abre em `file:///.../app/dist/index.html`. Com `BrowserRouter`, o `<Navigate to="/agentes" replace />` muda a URL para `file:///C:/agentes`; se o usuário der `Ctrl+R` / `F5` na janela do Electron, o Chromium tenta abrir `C:\agentes` no disco e a tela fica em branco (`ERR_FILE_NOT_FOUND`).
+     - **Correção:** Em `app/src/main.tsx`, usar `HashRouter` quando `window.location.protocol === 'file:'` (ou usar `HashRouter` sempre) e recompilar `app/dist` (`npm run build`).
+  4. **[BUILD / DX] `electron@45.2.1` não baixa o binário `electron.exe` no `npm install` + `.gitignore` (`installers/electron/package.json` + `.gitignore`):**
+     No Electron 45 o pacote removeu o `postinstall` automático e expõe `"install-electron": "install.js"`.
+     - **Correção:** Adicionar `"postinstall": "node node_modules/electron/install.js"` nos `scripts` de `installers/electron/package.json` e adicionar `out/` ao `.gitignore` da raiz.
+  - **Aceite:** `npm run dist` (ou `npm run pack`) gera `out\win-unpacked\Vértice.exe` contendo `resources\core\node_modules\express`, `ws` e `node-pty`; ao iniciar `Vértice.exe`, `GET http://localhost:7845/api/health` e `GET http://localhost:7845/api/runtimes` respondem `200 OK` sem `ReferenceError` e a janela navega entre as 5 abas sem quebrar no reload.
+
 ---
 
 ## Possível trabalho futuro (fora do escopo mínimo de "funcional")

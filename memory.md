@@ -293,3 +293,51 @@ Revisão de leitura do core/app encontrou, e CONFIRMOU rodando contra o servidor
 - **Frontend:** `refreshService`/boot aplicam o snapshot primeiro e abrem o WebSocket antes da detecção; `api.runtimes(refresh)` com timeout de 90 s (o `get` padrão abortava em 8 s e deixava `realRuntimes` nulo).
 - **Verificação:** lógica de espera testada extraindo o código real (silêncio → ~330 ms; saída contínua → só libera após parar, 973 ms; CLI muda → desiste em ~650 ms; sessão encerrada → retorna; `exit` esquece a sessão); montagem da instrução (quebras `\n`/`\r\n` → espaço; sem prompt); cache testado com detecção simulada (1 detecção para 2 chamadas; force simultâneos deduplicados; erro libera nova tentativa); HTTP real: `complete` inexistente 404, `dispatch` sem projeto 400 e a tarefa permanece `todo`. `tsc -b` e `eslint .` exit 0. NÃO verificado: despacho para uma CLI real (PTY/CLI autenticada indisponíveis no sandbox), tempo real da detecção com cache (o `where` trava no sandbox) e o app no navegador. Os tempos (800 ms/10 s/200 ms) são heurísticos: ajustar se alguma CLI demorar mais para exibir o prompt.
 - **Ainda abertos da revisão:** API sem validação de enums (status/prioridade/kind), `setTerminalLines` a cada chunk do PTY, `deleteAgent` deixa tarefas órfãs, caminhos com espaço no perfil Windows (`cmd.exe /c`/modo pipe) não testados, mapa nome→id de runtime duplicado no frontend.
+
+
+### [09/11/2026] Auditoria E9, E10 e E11 (Concluídos e Validados na Máquina Real)
+
+- **Escopo auditado (commits `1179ae4`..`9de26be`):**
+  - **E9 (`6.7`) — Operação Limpa do Zero:**
+    - Banco `core/data/vertice.db` verificado: `mode = "clean"`, `0` projetos, `0` agentes, `0` conexões, `0` metas, `0` tarefas, `0` eventos e `0` `allowedWorkspaces`, preservando `approvedRuntimes: ["claude", "codex", "kimi", "powershell", "antigravity"]` e `policies` intactas.
+    - Rotas `POST /api/workspace/clear` e `POST /api/workspace/reset`, auto-ativação + auto-autorização do primeiro projeto (`assertSafeProjectPath` + `allowProjectWorkspace`), criação do primeiro agente principal (`kind: 'manager'`) quando `agents = []`, e auto-criação do `Gerente` em `POST /api/orchestrator/delegate` conferidos.
+  - **E10 (`6.8`) — Segurança do Serviço Local (`core/src/security.js` + `workspace.js` + Electron):**
+    - Validação de `Host` e `Origin` em HTTP e WebSocket (`verifyClient`), token por execução (`VERTICE_API_TOKEN` → `--vertice-token` → `preload.cjs` em CommonJS → `X-Vertice-Token` / `?token=`), e bloqueio de `C:\Users` / `Public` / outros perfis em `assertSafeProjectPath`.
+  - **E11 (`6.9`) — Despacho em Linha Única + Cache de Runtimes + Boot Rápido:**
+    - `dispatchWorkItem` aguarda silêncio de 800ms da sessão nova (`waitForSessionReady`) e envia instrução em linha única + `\r` separado (200ms); cache de 20s + deduplicação em `detectRuntimes`; boot do frontend aplica snapshot e abre WebSocket antes da detecção de CLIs.
+- **Testes executados nesta auditoria:**
+  - `node --test test/workspace.test.js` em `vertice/core` → **13/13 testes passando**.
+  - `npm run lint` (`eslint .`) em `vertice/app` → **0 erros**.
+  - `npm run build` (`tsc -b && vite build`) em `vertice/app` → **0 erros** (`dist/` gerado em 8.26s).
+- **Observações / Itens menores opcionais identificados na revisão:**
+  1. **`smoke-core.ps1` com banco em modo `clean`:** o script atual (`vertice/.agents/skills/vertice-verificacao/scripts/smoke-core.ps1`) exige `$ws.agents.Count -ge 1` na linha 17 e `$ws.allowedWorkspaces[0].path` na linha 58, o que falha se rodado direto num banco recém-limpo (`E9`). Se necessário, adaptar o script para criar um projeto temporário de smoke quando `projects.Count -eq 0` e restaurar o estado ao final.
+  2. **5 itens menores listados pelo Kiro em E11 (não bloqueantes para simular a operação):** validação de enums na API (`status`/`priority`/`kind`), otimização de `setTerminalLines` quando o `LiveTerminal` (xterm) já está visível, limpeza/desatribuição de tarefas ao remover agente (`deleteAgent`), teste de caminhos com espaço no modo `pipe`, e unificação do mapa `RUNTIME_NAME_TO_ID` no frontend.
+
+
+### [09/11/2026] Auditoria do Instalador Desktop (`installers/electron`) — Bugs Reais Encontrados (Task E12)
+
+- **O que foi executado na máquina real:**
+  - `npm install` em `vertice/installers/electron` (374 pacotes instalados; `node_modules` mantido no disco para não exigir novo download).
+  - Download do binário `electron.exe` (`node node_modules/electron/install.js`) e geração do instalador NSIS via `npm run dist` → gerou `out\Vertice-Setup-0.1.0.exe` (121 MB) e `out\win-unpacked\Vértice.exe`.
+  - Teste real do `node-pty@1.1.0` dentro do runtime do Electron 45 (`ABI=150`, `Node 24.22.1`): **FUNCIONOU NATIVAMENTE** (`PTY_IN_ELECTRON_OK`) sem precisar de Visual Studio Build Tools nem `electron-rebuild` (usa N-API pré-compilado em `prebuilds/win32-x64/conpty.node`).
+
+- **Por que o instalador (`Vértice.exe`) NÃO subiu o core de primeira — 4 bugs encontrados (registrados na Task E12):**
+  1. **[CRÍTICO — CORE] `ReferenceError: req is not defined` em `GET /api/runtimes` (`core/src/index.js:57-59`):**
+     A assinatura da rota na E11 ficou `app.get('/api/runtimes', async (_req, res) => {` mas na linha 59 usa `req.query.refresh === '1'`. Toda chamada a `/api/runtimes` lança `ReferenceError: req is not defined`! Basta trocar `_req` por `req` na linha 57.
+  2. **[CRÍTICO — INSTALADOR] `electron-builder` não copia `core/node_modules` em `extraResources` (`installers/electron/package.json`):**
+     O `electron-builder` aplica um filtro interno padrão `!**/node_modules/**/*` em `extraResources`. Como resultado, `out\win-unpacked\resources\core\node_modules` não foi criado e o `Vértice.exe` empacotado falhou ao iniciar o core com:
+     `Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'express' imported from ...\resources\core\src\index.js`.
+     - **Solução:** Adicionar entrada explícita `{ "from": "../../core/node_modules", "to": "core/node_modules", "filter": ["**/*", "!.bin/**", "!.cache/**"] }` em `extraResources` e `"npmRebuild": false` em `"build"`.
+  3. **[CRÍTICO — FRONT NO ELECTRON] `BrowserRouter` em `file://` (`app/src/main.tsx`):**
+     Com `mainWindow.loadFile(APP_INDEX)`, o `<Navigate to="/agentes" replace />` do `BrowserRouter` altera a URL para `file:///C:/agentes`. Ao recarregar a janela (`Ctrl+R`), o Electron tenta abrir `C:\agentes` no disco e cai em tela em branco (`ERR_FILE_NOT_FOUND`).
+     - **Solução:** Usar `HashRouter` em `app/src/main.tsx` (quando `window.location.protocol === 'file:'` ou sempre) e rodar `npm run build` em `app/` (no ambiente sem spawn do Kiro, podemos rodar o `vite build` e `electron-builder` aqui após o ajuste).
+  4. **[BUILD / DX] `electron@45.2.1` sem `postinstall` automático (`installers/electron/package.json`):**
+     Adicionar `"postinstall": "node node_modules/electron/install.js"` nos `scripts` de `installers/electron/package.json` e `out/` no `.gitignore`.
+
+### [06/11/2026] E12 — Correções do instalador Electron e da rota /api/runtimes
+
+1. **BUG MEU (E11): `GET /api/runtimes` derrubava o core.** A rota declarava `(_req, res)` mas usava `req.query.refresh`. Express 4 não captura rejeição de handler assíncrono, então o `ReferenceError` virava `unhandledRejection` e o Node encerrava o processo. Reproduzido antes da correção (processo encerrado, `ReferenceError` no stderr) e comparado depois (processo segue vivo, stderr limpo). **Por que escapou:** na E11 testei o cache de `detectRuntimes` isolado e a lógica do despacho, mas nunca chamei a rota HTTP (a detecção trava no sandbox) — a verificação não cobriu a camada que mudei. Corrigido: `async (req, res)`.
+2. **`core/node_modules` não ia para o pacote.** O electron-builder ignora `node_modules` dentro de `extraResources`; sem `express`/`ws`/`node-pty` o core falha com `ERR_MODULE_NOT_FOUND`. `package.json` do instalador: entrada explícita `../../core/node_modules → core/node_modules` (sem `.bin`/`.cache`), a entrada de `core` passou a excluir `node_modules/**` (evita sobreposição — decisão minha) e `"npmRebuild": false`. Premissa conferida: `node-pty@1.1.0` depende de `node-addon-api` (N-API) e traz `prebuilds/win32-x64`, então NÃO precisa de rebuild nem de Visual Studio Build Tools — o README (D2) dizia o contrário e foi corrigido.
+3. **`BrowserRouter` em `file://`.** `main.tsx` usa `HashRouter` quando `location.protocol === 'file:'` (dev/preview seguem com `BrowserRouter`), evitando rota `file:///C:/agentes` e tela em branco no F5.
+4. **Electron 45 não baixa o binário no `npm install`** (o pacote publicado não tem `scripts`; só expõe `install-electron`). Adicionado `"postinstall": "node node_modules/electron/install.js"`. `out/` entrou no `.gitignore`.
+- **Verificação:** item 1 por teste de processo (antes/depois); `package.json` validado como JSON e as entradas de `extraResources` conferidas; `tsc -b` e `eslint .` exit 0. **NÃO verificado:** `npm run pack`/`dist` (sem rede no sandbox) — falta confirmar que `out\win-unpacked\resources\core\node_modules\express`, `ws` e `node-pty` existem; abrir `Vértice.exe` e testar `/api/health`, `/api/runtimes` e o F5 em cada aba (HashRouter e token no Electron real).

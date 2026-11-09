@@ -54,7 +54,7 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'vertice-core', version: '0.1.0' })
 })
 
-app.get('/api/runtimes', async (_req, res) => {
+app.get('/api/runtimes', async (req, res) => {
   // ?refresh=1 ignora o cache (botão Verificar); sem isso reaproveita a detecção recente.
   res.json({ runtimes: await detectRuntimes({ force: req.query.refresh === '1' }) })
 })
