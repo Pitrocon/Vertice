@@ -51,9 +51,10 @@ const MAX_RESULT_CHARS = 1500
  */
 export function createTaskMonitor({
   runtimeId,
+  instruction = '',
   onComplete,
   idleMs = 4500,
-  echoMs = 1500,
+  echoMs = 0,
   settleMs = 600,
   minResponseChars = 20,
   now = Date.now,
@@ -62,6 +63,7 @@ export function createTaskMonitor({
 }) {
   const startedAt = now()
   const isPowerShell = runtimeId === 'powershell'
+  const cleanInstruction = instruction ? stripAnsi(instruction).trim() : ''
   let response = ''
   let responseChars = 0
   let timer = null
@@ -133,16 +135,22 @@ export function createTaskMonitor({
   return {
     feed(data) {
       if (done) return
-      // Janela de eco: o terminal repete o que foi digitado logo após o envio; não é resposta da IA.
-      if (now() - startedAt < echoMs) return
-      const clean = stripAnsi(data)
+      // Janela de eco opcional: quando > 0, ignora o intervalo inicial.
+      if (echoMs > 0 && now() - startedAt < echoMs) return
+      let clean = stripAnsi(data)
       if (!clean) return
+      if (cleanInstruction && clean.includes(cleanInstruction)) {
+        clean = clean.replace(cleanInstruction, '')
+      }
       response += clean
       if (response.length > MAX_RESPONSE_CHARS) response = response.slice(-MAX_RESPONSE_CHARS)
-      responseChars += clean.replace(/\s/g, '').length
-      // Poucos caracteres (spinner, redesenho de prompt) ainda não contam como resposta real.
-      if (responseChars < minResponseChars) return
       if (MARKER_LINE.test(response.slice(-2000))) { finish('marker'); return }
+      responseChars += clean.replace(/\s/g, '').length
+      const last = lastLines(1)[0]
+      const promptBack = isPowerShell && Boolean(last) && POWERSHELL_PROMPT.test(last)
+      // Poucos caracteres (spinner, redesenho de prompt) ainda não contam como resposta real,
+      // exceto no PowerShell quando o prompt `PS ...>` já retornou após executar o comando.
+      if (!promptBack && responseChars < minResponseChars) return
       arm()
     },
     exit(exitCode) {

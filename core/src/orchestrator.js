@@ -1,4 +1,4 @@
-﻿import { randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { RUNTIME_CATALOG, resolveCommand } from './runtimes.js'
 import { createTaskMonitor, COMPLETION_INSTRUCTION } from './task-monitor.js'
@@ -30,6 +30,12 @@ let broadcastFn = () => {}
 export function configureOrchestrator({ broadcast }) {
   if (typeof broadcast === 'function') broadcastFn = broadcast
 }
+
+export function registerAgentSession(agentId, sessionId) {
+  if (agentId && sessionId) agentSessions.set(agentId, sessionId)
+}
+
+export { trackedBroadcast }
 
 // Fonte única do mapeamento nome humano -> id do catálogo. Aceita também o
 // próprio id (ex.: "glm"). Retorna null se o runtime não for conhecido.
@@ -117,11 +123,12 @@ async function ensureAgentSession(agent, snapshot) {
 // heurística (marcador, fim da sessão, silêncio), não um sinal garantido da CLI.
 const taskMonitors = new Map() // sessionId -> { monitor, workItemId }
 
-function startTaskMonitor(sessionId, workItemId, runtimeId) {
+function startTaskMonitor(sessionId, workItemId, runtimeId, instruction) {
   // Nova tarefa na mesma sessão: a anterior deixa de ser observada (continua "doing" até o usuário decidir).
   taskMonitors.get(sessionId)?.monitor.cancel()
   const monitor = createTaskMonitor({
     runtimeId,
+    instruction,
     idleMs: Number(process.env.VERTICE_IDLE_COMPLETE_MS) || undefined,
     onComplete: (outcome) => { void autoCompleteTask(sessionId, workItemId, outcome) },
   })
@@ -190,11 +197,11 @@ export async function dispatchWorkItem(workItemId) {
   if (created) await waitForSessionReady(sessionId)
 
   const closedMessage = 'A sessão do agente foi encerrada antes de receber a tarefa.'
-  // O monitor nasce ANTES de digitar: o eco do que for digitado cai na janela de eco e é ignorado.
-  startTaskMonitor(sessionId, item.id, runtimeId)
-  if (!writeToSession(sessionId, instruction)) { cancelTaskMonitor(sessionId); throw new Error(closedMessage) }
+  if (!writeToSession(sessionId, instruction)) throw new Error(closedMessage)
   // Enter em escrita separada: TUIs tratam "texto + Enter" colados como colagem, não como envio.
   await delay(200)
+  // O monitor nasce imediatamente antes do Enter (\r): o eco da digitação já ocorreu nos 200ms acima.
+  startTaskMonitor(sessionId, item.id, runtimeId, instruction)
   if (!writeToSession(sessionId, '\r')) { cancelTaskMonitor(sessionId); throw new Error(closedMessage) }
 
   patchWorkItem(item.id, { status: 'doing' })

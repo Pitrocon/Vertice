@@ -1,4 +1,4 @@
-﻿import { createServer } from 'node:http'
+import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { execFile } from 'node:child_process'
@@ -10,7 +10,7 @@ import { detectRuntimes, resolveCommand, RUNTIME_CATALOG } from './runtimes.js'
 import { startSession, writeToSession, resizeSession, killSession, listActiveSessions } from './sessions.js'
 import { assertAllowedCwd, assertSafeProjectPath, expandEnvVars, WorkspaceError } from './workspace.js'
 import { checkRequestOrigin, isFileOrigin, isLocalHost, isLocalOrigin, tokenFromRequest } from './security.js'
-import { configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName } from './orchestrator.js'
+import { configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName, registerAgentSession, trackedBroadcast } from './orchestrator.js'
 import {
   listSessions, listEvents, recordEvent,
   getWorkspaceSnapshot, loadDemoData, clearWorkspaceData,
@@ -385,7 +385,8 @@ app.post('/api/sessions', async (req, res) => {
 
   try {
     const command = await resolveCommand(runtime.command)
-    const session = startSession({ agentId, command, args: runtime.sessionArgs, cwd: safeCwd, onEvent: broadcast })
+    const session = startSession({ agentId, command, args: runtime.sessionArgs, cwd: safeCwd, onEvent: trackedBroadcast })
+    registerAgentSession(agentId, session.id)
     broadcast({ type: 'session-started', ...session })
     res.json({ session })
   } catch (error) {
