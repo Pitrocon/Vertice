@@ -125,7 +125,22 @@ async function httpCheck(url, timeoutMs = 2500) {
   }
 }
 
-export async function detectRuntimes() {
+// A detecção dispara dezenas de processos (where + --version) e leva segundos. Cache curto +
+// deduplicação de chamadas simultâneas evitam repetir tudo a cada atualização da tela.
+const DETECTION_TTL_MS = 20000
+let detectionCache = { at: 0, value: null, inflight: null }
+
+export async function detectRuntimes({ force = false } = {}) {
+  if (!force && detectionCache.value && Date.now() - detectionCache.at < DETECTION_TTL_MS) return detectionCache.value
+  if (detectionCache.inflight) return detectionCache.inflight
+  detectionCache.inflight = runDetection().then(
+    (value) => { detectionCache = { at: Date.now(), value, inflight: null }; return value },
+    (error) => { detectionCache.inflight = null; throw error },
+  )
+  return detectionCache.inflight
+}
+
+async function runDetection() {
   const results = await Promise.all(RUNTIME_CATALOG.map(async (runtime) => {
     const path = await where(runtime.command)
     if (!path) {

@@ -183,9 +183,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const online = await api.health()
     setServiceOnline(online)
     if (online) {
-      const [detected, snapshot] = await Promise.all([api.runtimes(), api.getWorkspace()])
+      // Workspace primeiro (rápido); a detecção de CLIs (lenta, sem cache) chega depois.
+      applySnapshot(await api.getWorkspace())
+      const detected = await api.runtimes(true)
       if (detected) setRealRuntimes(detected)
-      applySnapshot(snapshot)
     }
   }, [applySnapshot])
 
@@ -196,10 +197,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       if (!mounted) return
       setServiceOnline(online)
       if (!online) return
-      const [detected, snapshot] = await Promise.all([api.runtimes(), api.getWorkspace()])
+      // Workspace e WebSocket primeiro: a detecção de CLIs é lenta e não pode bloquear a tela.
+      const snapshot = await api.getWorkspace()
       if (!mounted) return
-      if (detected) setRealRuntimes(detected)
       applySnapshot(snapshot)
+      void api.runtimes().then((detected) => { if (mounted && detected) setRealRuntimes(detected) })
       wsRef.current = connectEvents((event) => {
         if (event.type === 'output') {
           const data = String(event.data ?? '')

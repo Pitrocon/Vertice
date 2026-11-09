@@ -55,7 +55,8 @@ app.get('/api/health', (_req, res) => {
 })
 
 app.get('/api/runtimes', async (_req, res) => {
-  res.json({ runtimes: await detectRuntimes() })
+  // ?refresh=1 ignora o cache (botão Verificar); sem isso reaproveita a detecção recente.
+  res.json({ runtimes: await detectRuntimes({ force: req.query.refresh === '1' }) })
 })
 
 app.get('/api/catalog', (_req, res) => {
@@ -90,7 +91,7 @@ app.post('/api/runtimes/:id/install', async (req, res) => {
   }
 
   // Revalida a versao apos instalar.
-  const detected = (await detectRuntimes()).find((r) => r.id === runtime.id)
+  const detected = (await detectRuntimes({ force: true })).find((r) => r.id === runtime.id)
   recordEvent('gerente', `${runtime.name} instalado — versão ${detected?.version ?? 'desconhecida'}`, 'system')
   res.json({ runtime: detected, snapshot: broadcastSnapshot() })
 })
@@ -289,6 +290,7 @@ app.post('/api/work-items/:id/dispatch', async (req, res) => {
 app.post('/api/work-items/:id/complete', async (req, res) => {
   const { result, error } = req.body ?? {}
   const out = await completeWorkItem(req.params.id, { result, error })
+  if (!out.ok) return res.status(404).json({ error: out.error })
   res.json({ ...out, snapshot: getWorkspaceSnapshot() })
 })
 

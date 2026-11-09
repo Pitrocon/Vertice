@@ -56,9 +56,9 @@ export interface WorkspaceSnapshot {
   allowedWorkspaces?: AllowedWorkspace[]
 }
 
-async function get<T>(path: string): Promise<T | null> {
+async function get<T>(path: string, timeoutMs = 8000): Promise<T | null> {
   try {
-    const res = await fetch(`${BASE}${path}`, { headers: authHeaders(), signal: AbortSignal.timeout(8000) })
+    const res = await fetch(`${BASE}${path}`, { headers: authHeaders(), signal: AbortSignal.timeout(timeoutMs) })
     if (!res.ok) return null
     return (await res.json()) as T
   } catch {
@@ -86,8 +86,9 @@ export const api = {
     return res?.ok === true
   },
 
-  async runtimes(): Promise<DetectedRuntime[] | null> {
-    const res = await get<{ runtimes: DetectedRuntime[] }>('/api/runtimes')
+  async runtimes(refresh = false): Promise<DetectedRuntime[] | null> {
+    // A detecção de CLIs pode demorar bem mais que as demais chamadas (muitos processos): timeout próprio.
+    const res = await get<{ runtimes: DetectedRuntime[] }>(`/api/runtimes${refresh ? '?refresh=1' : ''}`, 90000)
     return res?.runtimes ?? null
   },
 

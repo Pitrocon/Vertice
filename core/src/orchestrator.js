@@ -47,12 +47,38 @@ function activeProjectPath(snapshot) {
   return active?.path ?? ''
 }
 
+// Atividade de saída por sessão: serve para saber quando a CLI terminou de subir e está pronta para
+// receber a instrução (digitar antes disso perde ou embaralha o texto).
+const sessionActivity = new Map()
+
+function trackedBroadcast(event) {
+  if (event?.type === 'output' && event.sessionId) sessionActivity.set(event.sessionId, Date.now())
+  else if (event?.type === 'exit' && event.sessionId) sessionActivity.delete(event.sessionId)
+  broadcastFn(event)
+}
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+// Espera a saída da sessão "assentar": houve saída e ficou quieta por `quietMs`. Desiste em `maxMs`
+// (segue mesmo assim, pois algumas CLIs não imprimem nada) ou se a sessão morrer.
+async function waitForSessionReady(sessionId, { quietMs = 800, maxMs = 10000 } = {}) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < maxMs) {
+    if (!listActiveSessions().some((s) => s.id === sessionId)) return false
+    const last = sessionActivity.get(sessionId)
+    if (last && Date.now() - last >= quietMs) return true
+    await delay(100)
+  }
+  return false
+}
+
 // Garante uma sessao real viva para o agente, confinada ao workspace do projeto ativo.
+// Retorna { sessionId, created }: `created` indica sessão nova (a CLI ainda está subindo).
 async function ensureAgentSession(agent, snapshot) {
   const existingId = agentSessions.get(agent.id)
   if (existingId) {
     const stillAlive = listActiveSessions().some((s) => s.id === existingId)
-    if (stillAlive) return existingId
+    if (stillAlive) return { sessionId: existingId, created: false }
     agentSessions.delete(agent.id)
   }
 
@@ -65,7 +91,9 @@ async function ensureAgentSession(agent, snapshot) {
   if (!approved.includes(runtimeId)) {
     throw new WorkspaceError(`O runtime "${runtimeId}" do agente ${agent.name} não está aprovado pelo TI.`)
   }
-  const safeCwd = assertAllowedCwd(activeProjectPath(snapshot), listAllowedWorkspaces())
+  const projectPath = activeProjectPath(snapshot)
+  if (!projectPath) throw new Error('Nenhum projeto ativo. Crie um projeto na aba Projects antes de despachar tarefas.')
+  const safeCwd = assertAllowedCwd(projectPath, listAllowedWorkspaces())
   mkdirSync(safeCwd, { recursive: true })
 
   const command = await resolveCommand(runtime.command)
@@ -74,11 +102,11 @@ async function ensureAgentSession(agent, snapshot) {
     command,
     args: runtime.sessionArgs,
     cwd: safeCwd,
-    onEvent: broadcastFn,
+    onEvent: trackedBroadcast,
   })
   agentSessions.set(agent.id, session.id)
   broadcastFn({ type: 'session-started', ...session })
-  return session.id
+  return { sessionId: session.id, created: true }
 }
 
 /**
@@ -95,11 +123,24 @@ export async function dispatchWorkItem(workItemId) {
   const agent = snapshot.agents.find((a) => a.id === item.assigneeId)
   if (!agent) throw new Error('Agente responsável não encontrado.')
 
-  const sessionId = await ensureAgentSession(agent, snapshot)
+  const { sessionId, created } = await ensureAgentSession(agent, snapshot)
 
-  // Monta a instrucao da tarefa a partir do prompt do agente + titulo da tarefa.
-  const instruction = `${agent.prompt ? agent.prompt + '\n\n' : ''}Tarefa: ${item.title}`
-  writeToSession(sessionId, `${instruction}\r`)
+  // Instrução em UMA linha: num terminal interativo cada quebra de linha viraria um Enter e enviaria
+  // o prompt picado, em várias submissões.
+  const instruction = [agent.prompt, `Tarefa: ${item.title}`]
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s*[\r\n]+\s*/g, ' ')
+    .trim()
+
+  // Sessão nova: espera a CLI terminar de subir antes de digitar.
+  if (created) await waitForSessionReady(sessionId)
+
+  const closedMessage = 'A sessão do agente foi encerrada antes de receber a tarefa.'
+  if (!writeToSession(sessionId, instruction)) throw new Error(closedMessage)
+  // Enter em escrita separada: TUIs tratam "texto + Enter" colados como colagem, não como envio.
+  await delay(200)
+  if (!writeToSession(sessionId, '\r')) throw new Error(closedMessage)
 
   patchWorkItem(item.id, { status: 'doing' })
   patchAgent(agent.id, { status: 'working', task: item.title })
@@ -128,7 +169,8 @@ export function canDelegate(sourceId, targetId) {
 // e chamar completeWorkItem() com result/error. NAO apresentar como real ate validar.
 export async function completeWorkItem(workItemId, { result, error } = {}) {
   const status = error ? 'failed' : 'review'
-  patchWorkItem(workItemId, { status, result: result ?? null, error: error ?? null })
+  const updated = patchWorkItem(workItemId, { status, result: result ?? null, error: error ?? null })
+  if (!updated) return { ok: false, error: 'Tarefa não encontrada.' }
 
   // B4: status do agente derivado do real — sem tarefa "doing" ativa, volta a idle.
   const snap = getWorkspaceSnapshot()
