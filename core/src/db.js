@@ -120,18 +120,14 @@ const DEFAULT_SETTINGS = {
   policies: { allowDestructiveCommands: false, allowNetwork: true, allowCredentials: false },
 }
 
-function seedSettingsAndWorkspaces() {
+// Garante APENAS as configurações das CLIs (runtimes aprovados e políticas).
+// Um banco novo começa LIMPO: nenhum projeto, agente, tarefa nem workspace permitido.
+function seedSettings() {
   const settingsCount = db.prepare('SELECT COUNT(*) AS count FROM settings').get().count
   if (settingsCount === 0) {
     const stmt = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)')
     stmt.run('approvedRuntimes', JSON.stringify(DEFAULT_SETTINGS.approvedRuntimes))
     stmt.run('policies', JSON.stringify(DEFAULT_SETTINGS.policies))
-  }
-  const wsCount = db.prepare('SELECT COUNT(*) AS count FROM allowed_workspaces').get().count
-  if (wsCount === 0) {
-    const stmt = db.prepare('INSERT INTO allowed_workspaces (id, path) VALUES (?, ?)')
-    stmt.run('ws-atlas', DEFAULT_ATLAS_PATH)
-    stmt.run('ws-intranet', DEFAULT_INTRANET_PATH)
   }
 }
 
@@ -140,7 +136,7 @@ function runMigrations() {
 
   // v1 -> introducao das tabelas settings e allowed_workspaces + seed.
   if (current < 1) {
-    seedSettingsAndWorkspaces()
+    seedSettings()
   }
 
   // v2 -> corrigir projetos legados que ainda apontam para C:\work\* inexistente.
@@ -237,48 +233,64 @@ const INITIAL_WORK_ITEMS = [
   { id: 'wi-6', title: 'Escrever guia de instalação das CLIs', status: 'todo', assigneeId: 'pesquisador', goalId: 'goal-onboarding', priority: 'baixa' },
 ]
 
-export function seedInitialData(force = false) {
-  if (force) {
-    db.exec(`
-      DELETE FROM projects;
-      DELETE FROM agents;
-      DELETE FROM connections;
-      DELETE FROM goals;
-      DELETE FROM work_items;
-      DELETE FROM settings;
-      DELETE FROM allowed_workspaces;
-    `)
-  }
-  const projectCount = db.prepare('SELECT COUNT(*) AS count FROM projects').get().count
-  if (projectCount === 0) {
-    const stmt = db.prepare('INSERT INTO projects (id, name, path, description, active) VALUES (?, ?, ?, ?, ?)')
-    for (const p of INITIAL_PROJECTS) stmt.run(p.id, p.name, p.path, p.description, p.active)
-  }
-  const agentCount = db.prepare('SELECT COUNT(*) AS count FROM agents').get().count
-  if (agentCount === 0) {
-    const stmt = db.prepare('INSERT INTO agents (id, name, role, kind, runtime, model, status, task, progress, prompt, x, y, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    for (const a of INITIAL_AGENTS) stmt.run(a.id, a.name, a.role, a.kind, a.runtime, a.model, a.status, a.task, a.progress, a.prompt, a.x, a.y, a.createdBy)
-  }
-  const connCount = db.prepare('SELECT COUNT(*) AS count FROM connections').get().count
-  if (connCount === 0) {
-    const stmt = db.prepare('INSERT INTO connections (id, source, target, label, active) VALUES (?, ?, ?, ?, ?)')
-    for (const c of INITIAL_CONNECTIONS) stmt.run(c.id, c.source, c.target, c.label, c.active)
-  }
-  const goalCount = db.prepare('SELECT COUNT(*) AS count FROM goals').get().count
-  if (goalCount === 0) {
-    const stmt = db.prepare('INSERT INTO goals (id, title, description) VALUES (?, ?, ?)')
-    for (const g of INITIAL_GOALS) stmt.run(g.id, g.title, g.description)
-  }
-  const wiCount = db.prepare('SELECT COUNT(*) AS count FROM work_items').get().count
-  if (wiCount === 0) {
-    const stmt = db.prepare('INSERT INTO work_items (id, title, status, assignee_id, goal_id, priority) VALUES (?, ?, ?, ?, ?, ?)')
-    for (const w of INITIAL_WORK_ITEMS) stmt.run(w.id, w.title, w.status, w.assigneeId, w.goalId, w.priority)
-  }
-  seedSettingsAndWorkspaces()
+function setWorkspaceMode(mode) {
+  db.prepare(`
+    INSERT INTO meta (key, value) VALUES ('workspace_mode', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(mode)
 }
 
-seedInitialData(false)
+export function getWorkspaceMode() {
+  const row = db.prepare("SELECT value FROM meta WHERE key = 'workspace_mode'").get()
+  return row ? row.value : null
+}
+
+// Apaga TODOS os dados de trabalho (projetos, agentes, conexões, metas, tarefas, workspaces
+// permitidos, eventos e histórico de sessões). NUNCA toca em `settings`: aprovação de CLIs e
+// políticas da aba CLI's são preservadas.
+export function clearWorkspaceData() {
+  db.exec(`
+    DELETE FROM projects;
+    DELETE FROM agents;
+    DELETE FROM connections;
+    DELETE FROM goals;
+    DELETE FROM work_items;
+    DELETE FROM allowed_workspaces;
+    DELETE FROM events;
+    DELETE FROM sessions;
+  `)
+  setWorkspaceMode('clean')
+}
+
+// Carrega os dados de DEMONSTRAÇÃO (equipe, projetos, metas e tarefas de exemplo). Só roda sob
+// pedido explícito (POST /api/workspace/reset). Substitui os dados de trabalho; preserva `settings`.
+export function loadDemoData() {
+  clearWorkspaceData()
+  const projectStmt = db.prepare('INSERT INTO projects (id, name, path, description, active) VALUES (?, ?, ?, ?, ?)')
+  for (const p of INITIAL_PROJECTS) projectStmt.run(p.id, p.name, p.path, p.description, p.active)
+  const agentStmt = db.prepare('INSERT INTO agents (id, name, role, kind, runtime, model, status, task, progress, prompt, x, y, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+  for (const a of INITIAL_AGENTS) agentStmt.run(a.id, a.name, a.role, a.kind, a.runtime, a.model, a.status, a.task, a.progress, a.prompt, a.x, a.y, a.createdBy)
+  const connStmt = db.prepare('INSERT INTO connections (id, source, target, label, active) VALUES (?, ?, ?, ?, ?)')
+  for (const c of INITIAL_CONNECTIONS) connStmt.run(c.id, c.source, c.target, c.label, c.active)
+  const goalStmt = db.prepare('INSERT INTO goals (id, title, description) VALUES (?, ?, ?)')
+  for (const g of INITIAL_GOALS) goalStmt.run(g.id, g.title, g.description)
+  const wiStmt = db.prepare('INSERT INTO work_items (id, title, status, assignee_id, goal_id, priority) VALUES (?, ?, ?, ?, ?, ?)')
+  for (const w of INITIAL_WORK_ITEMS) wiStmt.run(w.id, w.title, w.status, w.assigneeId, w.goalId, w.priority)
+  const wsStmt = db.prepare('INSERT INTO allowed_workspaces (id, path) VALUES (?, ?)')
+  wsStmt.run('ws-atlas', DEFAULT_ATLAS_PATH)
+  wsStmt.run('ws-intranet', DEFAULT_INTRANET_PATH)
+  setWorkspaceMode('demo')
+}
+
+// Boot: NÃO repovoa dados de demonstração. Só garante as configurações das CLIs.
 runMigrations()
+seedSettings()
+if (getWorkspaceMode() === null) {
+  // Banco criado por versão anterior: classifica pelo conteúdo, sem alterar nenhum dado.
+  const hasData = db.prepare('SELECT COUNT(*) AS count FROM projects').get().count > 0
+    || db.prepare('SELECT COUNT(*) AS count FROM agents').get().count > 0
+  setWorkspaceMode(hasData ? 'demo' : 'clean')
+}
 
 function mapProject(row) {
   return { id: row.id, name: row.name, path: row.path, description: row.description, active: Boolean(row.active) }
@@ -382,9 +394,25 @@ export function getWorkspaceSnapshot() {
   }
 }
 
+// O primeiro projeto criado (quando não há nenhum ativo) já nasce ativo.
 export function createProject({ id, name, path, description }) {
-  db.prepare('INSERT INTO projects (id, name, path, description, active) VALUES (?, ?, ?, ?, 0)')
-    .run(id, name, path, description ?? '')
+  const hasActive = db.prepare('SELECT COUNT(*) AS count FROM projects WHERE active = 1').get().count > 0
+  db.prepare('INSERT INTO projects (id, name, path, description, active) VALUES (?, ?, ?, ?, ?)')
+    .run(id, name, path, description ?? '', hasActive ? 0 : 1)
+}
+
+export function getProject(id) {
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id)
+  return row ? mapProject(row) : null
+}
+
+// Registra o path do projeto em allowed_workspaces (idempotente) para o confinamento
+// (assertAllowedCwd) autorizar o diretório. O CHAMADOR deve validar o path antes.
+export function allowProjectWorkspace({ id, path }) {
+  const norm = (p) => p.replace(/[\\/]+$/, '').toLowerCase()
+  if (listAllowedWorkspaces().some((w) => norm(w.path) === norm(path))) return false
+  addAllowedWorkspace({ id: `ws-${id}`, path })
+  return true
 }
 
 export function activateProject(id) {

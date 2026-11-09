@@ -8,12 +8,12 @@ import express from 'express'
 import { WebSocketServer } from 'ws'
 import { detectRuntimes, resolveCommand, RUNTIME_CATALOG } from './runtimes.js'
 import { startSession, writeToSession, resizeSession, killSession, listActiveSessions } from './sessions.js'
-import { assertAllowedCwd, WorkspaceError } from './workspace.js'
+import { assertAllowedCwd, assertSafeProjectPath, expandEnvVars, WorkspaceError } from './workspace.js'
 import { configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName } from './orchestrator.js'
 import {
   listSessions, listEvents, recordEvent,
-  getWorkspaceSnapshot, seedInitialData,
-  createProject, activateProject,
+  getWorkspaceSnapshot, loadDemoData, clearWorkspaceData,
+  createProject, activateProject, getProject, allowProjectWorkspace,
   upsertAgent, patchAgent, deleteAgent,
   createConnection, createGoal, createWorkItem, patchWorkItem,
   getSettings, getSetting, setSetting,
@@ -92,9 +92,26 @@ app.get('/api/workspace', (_req, res) => {
   res.json(getWorkspaceSnapshot())
 })
 
+// Encerra todas as sessões vivas (usado ao trocar/limpar o workspace: os agentes deixam de existir).
+function endAllSessions() {
+  for (const session of listActiveSessions()) {
+    if (killSession(session.id)) broadcast({ type: 'session-ended', sessionId: session.id })
+  }
+}
+
+// Carrega os dados de DEMONSTRAÇÃO (equipe e projetos de exemplo). Preserva aprovação de CLIs/políticas.
 app.post('/api/workspace/reset', (_req, res) => {
-  seedInitialData(true)
-  recordEvent('gerente', 'Dados iniciais restaurados no SQLite', 'system')
+  endAllSessions()
+  loadDemoData()
+  recordEvent(null, 'Dados de demonstração carregados', 'system')
+  res.json(broadcastSnapshot())
+})
+
+// Operar do zero: apaga projetos, agentes, conexões, metas, tarefas, workspaces e eventos.
+// Mantém apenas as configurações das CLIs (settings).
+app.post('/api/workspace/clear', (_req, res) => {
+  endAllSessions()
+  clearWorkspaceData()
   res.json(broadcastSnapshot())
 })
 
@@ -132,17 +149,36 @@ app.delete('/api/settings/workspaces/:id', (req, res) => {
   res.json(broadcastSnapshot())
 })
 
+// Criar projeto: o workspace do projeto passa a ser um workspace permitido (após validação de
+// segurança do caminho) e o primeiro projeto já nasce ativo.
 app.post('/api/projects', (req, res) => {
   const { id, name, path, description } = req.body ?? {}
   if (!name || !path) return res.status(400).json({ error: 'name e path são obrigatórios' })
-  createProject({ id: id || randomUUID(), name, path, description: description ?? '' })
-  recordEvent('gerente', `Projeto ${name} criado (${path})`, 'create')
+  let safePath
+  try {
+    safePath = assertSafeProjectPath(expandEnvVars(String(path).trim()))
+  } catch (error) {
+    if (error instanceof WorkspaceError) return res.status(403).json({ error: error.message })
+    return res.status(500).json({ error: `Falha ao validar o caminho: ${error.message}` })
+  }
+  const projectId = id || randomUUID()
+  createProject({ id: projectId, name, path: safePath, description: description ?? '' })
+  allowProjectWorkspace({ id: projectId, path: safePath })
+  recordEvent(null, `Projeto ${name} criado (${safePath})`, 'create')
   res.json(broadcastSnapshot())
 })
 
 app.post('/api/projects/:id/activate', (req, res) => {
-  activateProject(req.params.id)
-  recordEvent('gerente', `Projeto ativo alterado para ${req.params.id}`, 'system')
+  const project = getProject(req.params.id)
+  if (!project) return res.status(404).json({ error: 'Projeto não encontrado' })
+  try {
+    allowProjectWorkspace({ id: project.id, path: assertSafeProjectPath(project.path) })
+  } catch (error) {
+    if (error instanceof WorkspaceError) return res.status(403).json({ error: error.message })
+    return res.status(500).json({ error: `Falha ao validar o caminho: ${error.message}` })
+  }
+  activateProject(project.id)
+  recordEvent(null, `Projeto ativo alterado para ${project.name}`, 'system')
   res.json(broadcastSnapshot())
 })
 
@@ -258,7 +294,11 @@ app.post('/api/orchestrator/delegate', (req, res) => {
   }
   const snapshot = getWorkspaceSnapshot()
   const manager = snapshot.agents.find((a) => a.id === managerId)
-  if (!manager) return res.status(404).json({ error: 'Gerente não encontrado' })
+  // Operação do zero: sem NENHUM gerente, o Gerente padrão é criado (depois de validar o time).
+  const needsManager = !manager
+  if (needsManager && snapshot.agents.some((a) => a.kind === 'manager')) {
+    return res.status(404).json({ error: 'Gerente não encontrado' })
+  }
 
   // Validacao: runtime de cada subagente precisa estar aprovado; respeitar limite.
   const approved = getSetting('approvedRuntimes') ?? []
@@ -274,6 +314,16 @@ app.post('/api/orchestrator/delegate', (req, res) => {
     if (!approved.includes(rid)) {
       return res.status(403).json({ error: `Runtime "${member.runtime}" do subagente ${member.name} não está aprovado.` })
     }
+  }
+
+  if (needsManager) {
+    upsertAgent({
+      id: managerId, name: 'Gerente', role: 'Orquestrador principal', kind: 'manager',
+      runtime: 'Claude Code', model: 'claude-sonnet', status: 'idle', task: 'Aguardando objetivo',
+      prompt: 'Coordene a equipe, divida objetivos em tarefas e crie especialistas quando necessário.',
+      x: 280, y: 0,
+    })
+    recordEvent(managerId, 'Gerente criado automaticamente para receber o objetivo', 'create')
   }
 
   // Cria subagentes reais + conexoes manager->sub + uma tarefa por subagente.
@@ -313,6 +363,9 @@ app.post('/api/sessions', async (req, res) => {
   let safeCwd
   try {
     const requested = resolveSessionCwd(cwd)
+    if (!requested) {
+      return res.status(400).json({ error: 'Nenhum projeto ativo. Crie um projeto na aba Projects antes de iniciar uma sessão.' })
+    }
     safeCwd = assertAllowedCwd(requested, listAllowedWorkspaces())
     // Cria o diretorio do workspace se ainda nao existir (ja validado como seguro).
     mkdirSync(safeCwd, { recursive: true })
