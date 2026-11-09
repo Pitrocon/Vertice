@@ -144,6 +144,11 @@ function OrganogramaView() {
             agents={agents}
             activeAgent={activeTerminalAgent}
             workspacePath={workspace.activeProject?.path}
+            hasLiveSession={hasLiveSessionForTerminal}
+            onRawKey={workspace.sendRawKey}
+            getRawOutput={workspace.getRawOutput}
+            subscribeRawOutput={workspace.subscribeRawOutput}
+            onTerminalResize={workspace.resizeAgentSession}
             lines={currentTerminalLines}
             expanded={terminalExpanded}
             onSelectAgent={(id) => setSelectedId(id)}

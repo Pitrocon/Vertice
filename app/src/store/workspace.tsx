@@ -11,7 +11,7 @@ import type {
 } from '@/types/agent'
 import type { NewAgentInput } from '@/components/AgentDialogs'
 
-export type ModalName = 'create' | 'manager' | 'commands' | 'settings' | 'remove' | null
+export type ModalName = 'create' | 'manager' | 'commands' | 'settings' | 'remove' | 'clear' | null
 
 function usePersistentState<T>(key: string, fallback: T) {
   const [value, setValue] = useState<T>(() => {
@@ -57,8 +57,13 @@ interface WorkspaceValue {
   togglePause: (id: string) => void
   removeAgent: (id: string) => void
   runCommand: (command: string) => void
+  sendRawKey: (data: string) => void
+  resizeAgentSession: (agentId: string, cols: number, rows: number) => void
+  getRawOutput: (agentId: string) => string
+  subscribeRawOutput: (listener: RawOutputListener) => () => void
   clearTerminal: (agentId: string) => void
   resetDemo: () => void
+  clearWorkspace: () => Promise<void>
   moveWorkItem: (id: string, status: WorkStatus) => void
   addWorkItem: (input: { title: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority'] }) => void
   addGoal: (input: { title: string; description: string }) => void
@@ -82,6 +87,14 @@ interface WorkspaceValue {
 }
 
 const WorkspaceContext = createContext<WorkspaceValue | null>(null)
+
+// Limite da saída bruta guardada por agente (caracteres) para replay no xterm.
+const MAX_RAW_OUTPUT = 200_000
+// `data === null` significa "sessão nova: limpar o terminal".
+export type RawOutputListener = (agentId: string, data: string | null) => void
+
+// Comandos internos do terminal do Vértice; nunca são repassados à sessão real.
+const RESERVED_COMMANDS = new Set(['/help', '/status', '/agents', '/create', '/delegate', '/clear'])
 
 const RUNTIME_NAME_TO_ID: Record<string, string> = {
   'Claude Code': 'claude', 'Codex CLI': 'codex', 'Kimi CLI': 'kimi', 'GLM CLI': 'glm', 'GLM CLI (Z.ai)': 'glm', 'Antigravity CLI': 'antigravity',
@@ -117,10 +130,43 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setConnections(snapshot.connections)
     setGoals(snapshot.goals)
     setWorkItems(snapshot.workItems)
-    if (snapshot.events?.length) setEvents(snapshot.events)
+    // Lista vazia também é um estado válido (workspace limpo): sempre sobrescreve os eventos.
+    if (snapshot.events) setEvents(snapshot.events)
+    // Mantém a seleção se o agente ainda existe; senão seleciona o primeiro (ou ninguém).
+    setSelectedId((current) => (current && snapshot.agents.some((agent) => agent.id === current) ? current : (snapshot.agents[0]?.id ?? null)))
+    // Sem agentes não há terminais: descarta linhas de demonstração de agentes que não existem mais.
+    if (snapshot.agents.length === 0) setTerminalLines({})
     if (snapshot.settings) setSettings(snapshot.settings)
     if (snapshot.allowedWorkspaces) setAllowedWorkspaces(snapshot.allowedWorkspaces)
   }, [setProjects, setAgents, setConnections, setGoals, setWorkItems])
+
+  // Saída BRUTA (com ANSI) por agente, para o emulador de terminal (xterm.js).
+  // Guardada em ref (não em state) para não re-renderizar a cada chunk do PTY.
+  const rawOutputRef = useRef<Record<string, { chunks: string[]; size: number }>>({})
+  const rawListenersRef = useRef<Set<RawOutputListener>>(new Set())
+
+  const pushRawOutput = useCallback((agentId: string, data: string) => {
+    const entry = rawOutputRef.current[agentId] ?? (rawOutputRef.current[agentId] = { chunks: [], size: 0 })
+    entry.chunks.push(data)
+    entry.size += data.length
+    // Descarta os chunks mais antigos acima do limite (mantém ao menos o último).
+    while (entry.size > MAX_RAW_OUTPUT && entry.chunks.length > 1) {
+      entry.size -= entry.chunks.shift()!.length
+    }
+    rawListenersRef.current.forEach((listener) => listener(agentId, data))
+  }, [])
+
+  const resetRawOutput = useCallback((agentId: string) => {
+    delete rawOutputRef.current[agentId]
+    rawListenersRef.current.forEach((listener) => listener(agentId, null))
+  }, [])
+
+  const getRawOutput = useCallback((agentId: string) => (rawOutputRef.current[agentId]?.chunks.join('') ?? ''), [])
+
+  const subscribeRawOutput = useCallback((listener: RawOutputListener) => {
+    rawListenersRef.current.add(listener)
+    return () => { rawListenersRef.current.delete(listener) }
+  }, [])
 
   const appendSessionOutput = useCallback((agentId: string, data: string) => {
     const clean = stripAnsi(data)
@@ -156,7 +202,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       applySnapshot(snapshot)
       wsRef.current = connectEvents((event) => {
         if (event.type === 'output') {
-          appendSessionOutput(String(event.agentId), String(event.data ?? ''))
+          const data = String(event.data ?? '')
+          pushRawOutput(String(event.agentId), data)
+          appendSessionOutput(String(event.agentId), data)
+        } else if (event.type === 'session-started' && event.id && event.agentId) {
+          // Sessões abertas pelo core (ex.: despacho de tarefa) também ficam "vivas" na UI.
+          const agentId = String(event.agentId)
+          resetRawOutput(agentId)
+          setLiveSessions((current) => ({
+            ...current,
+            [agentId]: {
+              id: String(event.id), agentId, command: String(event.command ?? ''),
+              cwd: String(event.cwd ?? ''), mode: event.mode === 'pipe' ? 'pipe' : 'pty',
+            },
+          }))
         } else if ((event.type === 'workspace-updated' || event.type === 'task-updated') && event.snapshot) {
           applySnapshot(event.snapshot as WorkspaceSnapshot)
         } else if (event.type === 'exit' || event.type === 'session-ended') {
@@ -173,7 +232,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
     void boot()
     return () => { mounted = false; wsRef.current?.close() }
-  }, [appendSessionOutput, applySnapshot])
+  }, [appendSessionOutput, applySnapshot, pushRawOutput, resetRawOutput])
 
   const activeProject = useMemo(() => projects.find((project) => project.active) ?? projects[0], [projects])
 
@@ -200,25 +259,42 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, [connections, agents, setConnections, addEvent, serviceOnline, applySnapshot])
 
   const createAgent = useCallback((input: NewAgentInput) => {
-    const id = `${input.name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString(36)}`
+    const slug = input.name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-')
+    // Sem supervisor (`parentId` vazio) = agente principal. Só é permitido quando ainda não há gerente.
+    const isPrincipal = !input.parentId
+    const id = isPrincipal && !agents.some((agent) => agent.id === 'gerente') ? 'gerente' : `${slug}-${Date.now().toString(36)}`
     const workerCount = agents.filter((agent) => agent.kind === 'worker').length
-    const agent: Agent = {
-      id, name: input.name, role: input.role, kind: 'worker', runtime: input.runtime, model: input.model,
-      status: 'idle', task: 'Aguardando primeira tarefa', progress: 0, prompt: input.prompt,
-      x: 80 + (workerCount % 3) * 310, y: 560 + Math.floor(workerCount / 3) * 190, createdBy: input.parentId,
-    }
+    const agent: Agent = isPrincipal
+      ? {
+          id, name: input.name, role: input.role, kind: 'manager', runtime: input.runtime, model: input.model,
+          status: 'idle', task: 'Aguardando objetivo', progress: 0, prompt: input.prompt, x: 280, y: 0,
+        }
+      : {
+          id, name: input.name, role: input.role, kind: 'worker', runtime: input.runtime, model: input.model,
+          status: 'idle', task: 'Aguardando primeira tarefa', progress: 0, prompt: input.prompt,
+          x: 80 + (workerCount % 3) * 310, y: 560 + Math.floor(workerCount / 3) * 190, createdBy: input.parentId,
+        }
     setAgents((current) => [...current, agent])
-    setConnections((current) => [...current, { id: crypto.randomUUID(), source: input.parentId, target: id, label: 'delega' }])
+    // Agente principal não tem supervisor: não cria conexão (evita aresta órfã para um agente inexistente).
+    if (!isPrincipal) {
+      setConnections((current) => [...current, { id: crypto.randomUUID(), source: input.parentId, target: id, label: 'delega' }])
+    }
     setSelectedId(id)
     setModal(null)
-    addEvent(input.parentId, `${input.name} criado e vinculado à equipe`, 'create')
-    if (serviceOnline) void api.createAgent({ ...agent, parentId: input.parentId }).then(applySnapshot)
-    toast.success(`${input.name} adicionado à equipe`)
+    addEvent(isPrincipal ? id : input.parentId, isPrincipal ? `${input.name} criado como agente principal` : `${input.name} criado e vinculado à equipe`, 'create')
+    if (serviceOnline) void api.createAgent({ ...agent, parentId: isPrincipal ? undefined : input.parentId }).then(applySnapshot)
+    toast.success(isPrincipal ? `${input.name} criado como agente principal` : `${input.name} adicionado à equipe`)
   }, [agents, setAgents, setConnections, addEvent, serviceOnline, applySnapshot])
 
   const delegateToManager = useCallback((objective: string) => {
     const stamp = Date.now().toString(36)
-    const manager = agents.find((agent) => agent.kind === 'manager') ?? agents[0]
+    const existingManager = agents.find((agent) => agent.kind === 'manager') ?? agents[0]
+    // Workspace do zero (sem agentes): o Gerente padrão é criado junto (no core, ao delegar online).
+    const manager: Agent = existingManager ?? {
+      id: 'gerente', name: 'Gerente', role: 'Orquestrador principal', kind: 'manager',
+      runtime: 'Claude Code', model: 'claude-sonnet', status: 'idle', task: 'Aguardando objetivo', progress: 0,
+      prompt: 'Coordene a equipe, divida objetivos em tarefas e crie especialistas quando necessário.', x: 280, y: 0,
+    }
     const existingNames = new Set(agents.map((agent) => agent.name))
     const uniqueName = (base: string) => {
       if (!existingNames.has(base)) return base
@@ -277,7 +353,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     } else {
       // OFFLINE: demonstração visual, claramente rotulada como simulação.
       setAgents((currentAgents) => [
-        ...currentAgents.map((agent) => agent.id === manager.id ? { ...agent, status: 'working' as const, task: objective, progress: 12 } : agent),
+        ...(existingManager ? currentAgents : [manager, ...currentAgents]).map((agent) => agent.id === manager.id ? { ...agent, status: 'working' as const, task: objective, progress: 12 } : agent),
         ...newAgents,
       ])
       setConnections((current) => [...current, ...newConnections])
@@ -313,7 +389,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setAgents((current) => current.filter((agent) => agent.id !== id))
     if (serviceOnline) void api.deleteAgent(id).then(applySnapshot)
     toast.success(`${target.name} removido da equipe`)
-    setSelectedId('gerente')
+    setSelectedId(agents.find((agent) => agent.kind === 'manager')?.id ?? null)
     setModal(null)
   }, [agents, setAgents, setConnections, serviceOnline, applySnapshot])
 
@@ -324,7 +400,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setTerminalLines((current) => ({ ...current, [agent.id]: [] }))
       return
     }
-    if (!command.startsWith('/') && liveSessions[agent.id]) {
+    // Com sessão real viva, tudo vai para a CLI, exceto os comandos internos reservados
+    // (assim /login, /trust etc. chegam à CLI em vez de caírem na simulação).
+    if (liveSessions[agent.id] && !RESERVED_COMMANDS.has(command)) {
       void api.sendInput(liveSessions[agent.id].id, `${command}\r`)
       return
     }
@@ -353,6 +431,22 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setTerminalLines((current) => ({ ...current, [agent.id]: [...(current[agent.id] ?? []), ...lines] }))
   }, [agents, selectedId, liveSessions])
 
+  // Ajusta o tamanho do PTY quando o emulador (xterm) muda de dimensões.
+  const resizeAgentSession = useCallback((agentId: string, cols: number, rows: number) => {
+    const session = liveSessions[agentId]
+    if (!session || cols < 2 || rows < 1) return
+    void api.resizeSession(session.id, cols, rows)
+  }, [liveSessions])
+
+  // Envia bytes/sequências ANSI direto ao PTY da sessão viva do agente selecionado,
+  // sem "\r" extra (setas, Enter vazio, Esc, Tab, Ctrl+C em menus interativos de CLIs).
+  const sendRawKey = useCallback((data: string) => {
+    const agent = agents.find((item) => item.id === selectedId) ?? agents[0]
+    const session = agent ? liveSessions[agent.id] : undefined
+    if (!session) return
+    void api.sendInput(session.id, data)
+  }, [agents, selectedId, liveSessions])
+
   const clearTerminal = useCallback((agentId: string) => {
     setTerminalLines((current) => ({ ...current, [agentId]: [] }))
   }, [])
@@ -372,6 +466,29 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (serviceOnline) void api.resetWorkspace().then(applySnapshot)
     toast.success('Demonstração restaurada')
   }, [setAgents, setConnections, setGoals, setWorkItems, setProjects, serviceOnline, applySnapshot])
+
+  // Operar do zero: apaga projetos, agentes, conexões, metas, tarefas, workspaces e eventos.
+  // A aba CLI's (aprovações e políticas) é preservada.
+  const clearWorkspace = useCallback(async () => {
+    setModal(null)
+    if (serviceOnline) {
+      const snapshot = await api.clearWorkspace()
+      if (!snapshot) { toast.error('Não foi possível limpar o workspace'); return }
+      applySnapshot(snapshot)
+    } else {
+      setAgents([])
+      setConnections([])
+      setGoals([])
+      setWorkItems([])
+      setProjects([])
+    }
+    rawOutputRef.current = {}
+    setEvents([])
+    setLiveSessions({})
+    setTerminalLines({})
+    setSelectedId(null)
+    toast.success('Workspace limpo · você pode começar do zero')
+  }, [serviceOnline, applySnapshot, setAgents, setConnections, setGoals, setWorkItems, setProjects])
 
   const moveWorkItem = useCallback((id: string, status: WorkStatus) => {
     setWorkItems((current) => current.map((item) => (item.id === id ? { ...item, status } : item)))
@@ -394,9 +511,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const addProject = useCallback((input: { name: string; path: string; description: string }) => {
     const proj: Project = { id: crypto.randomUUID(), ...input }
-    setProjects((current) => [...current, proj])
-    if (serviceOnline) void api.createProject(proj).then(applySnapshot)
-    toast.success(`Projeto ${input.name} criado`)
+    if (serviceOnline) {
+      // Online: o core valida o caminho (recusa pastas de sistema), autoriza o workspace e
+      // ativa o primeiro projeto. Só aparece na tela se o core aceitar (sem projeto "fantasma").
+      void api.createProject(proj).then(({ snapshot, error }) => {
+        if (!snapshot) { toast.error(error ?? 'Não foi possível criar o projeto'); return }
+        applySnapshot(snapshot)
+        toast.success(`Projeto ${input.name} criado`)
+      })
+      return
+    }
+    setProjects((current) => [...current, { ...proj, active: current.length === 0 }])
+    toast.success(`Projeto ${input.name} criado (offline)`)
   }, [setProjects, serviceOnline, applySnapshot])
 
   const setActiveProject = useCallback((id: string) => {
@@ -432,8 +558,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       toast.error(`${agent.runtime} não está instalado nesta máquina`)
       return
     }
-    const session = await api.createSession({ agentId, runtimeId, cwd: activeProject?.path ?? '' })
-    if (!session) { toast.error('Falha ao iniciar a sessão real'); return }
+    if (!activeProject) { toast.error('Crie um projeto na aba Projects antes de iniciar uma sessão real'); return }
+    const session = await api.createSession({ agentId, runtimeId, cwd: activeProject.path })
+    if (!session) { toast.error('Falha ao iniciar a sessão real (verifique se a CLI está aprovada na aba CLI\'s)'); return }
     setLiveSessions((current) => ({ ...current, [agentId]: session }))
     setSelectedId(agentId)
     setTerminalOpen(true)
@@ -504,7 +631,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     showGrid, showMinimap, goals, workItems, projects, activeProject, cliRuntimes,
     setSelectedId, setModal, setTerminalOpen, setTerminalExpanded, setShowGrid, setShowMinimap,
     setAgentPosition, addConnection, createAgent, delegateToManager, togglePause, removeAgent,
-    runCommand, clearTerminal, resetDemo,
+    runCommand, sendRawKey, resizeAgentSession, getRawOutput, subscribeRawOutput, clearTerminal, resetDemo, clearWorkspace,
     moveWorkItem, addWorkItem, addGoal, addProject, setActiveProject,
     checkCli, installCli, toggleCliApproved,
     settings, allowedWorkspaces, updatePolicies, dispatchWorkItem, completeWorkItem,

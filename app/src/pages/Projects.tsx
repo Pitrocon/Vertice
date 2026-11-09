@@ -20,6 +20,9 @@ export function ProjectsPage() {
         </div>
       </header>
 
+      {projects.length === 0 && (
+        <p className="page-note">Nenhum projeto ainda. Crie o primeiro com "Novo projeto": informe uma pasta dedicada (ex.: <code>%USERPROFILE%\vertice-workspaces\meu-projeto</code>). Ela passa a ser o único local onde os agentes podem trabalhar.</p>
+      )}
       <section className="project-grid">
         {projects.map((project) => (
           <article key={project.id} className={`project-card ${project.active ? 'is-active' : ''}`}>

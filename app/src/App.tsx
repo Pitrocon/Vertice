@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { NavLink, Navigate, Route, Routes, useNavigate } from 'react-router'
-import { Building2, ClipboardList, Command, FolderKanban, Network, SquareTerminal, Users } from 'lucide-react'
+import { Building2, ClipboardList, Command, FolderKanban, Network, SquareTerminal, Trash2, Users } from 'lucide-react'
 import { Toaster } from 'sonner'
 import '@fontsource-variable/geist'
 import '@fontsource-variable/geist-mono'
@@ -26,7 +26,7 @@ const navItems = [
 function Shell() {
   const workspace = useWorkspace()
   const navigate = useNavigate()
-  const { agents, modal, selectedId, activeProject, setModal, setTerminalOpen, setShowGrid, setShowMinimap, createAgent, delegateToManager, removeAgent, resetDemo, showGrid, showMinimap } = workspace
+  const { agents, modal, selectedId, activeProject, setModal, setTerminalOpen, setShowGrid, setShowMinimap, createAgent, delegateToManager, removeAgent, resetDemo, clearWorkspace, showGrid, showMinimap } = workspace
   const selectedAgent = selectedId ? agents.find((agent) => agent.id === selectedId) : undefined
 
   const goTerminal = () => {
@@ -109,7 +109,17 @@ function Shell() {
           onTerminal={goTerminal}
           onFit={() => navigate('/organograma')}
           onReset={resetDemo}
+          onClear={() => setModal('clear')}
         />
+      )}
+      {modal === 'clear' && (
+        <Modal title="Limpar o workspace?" eyebrow="OPERAR DO ZERO" onClose={() => setModal(null)}>
+          <div className="confirm-copy">
+            <p>Isto apaga todos os <strong>agentes, projetos, metas, tarefas, conexões e eventos</strong> e encerra as sessões em andamento. Os arquivos das pastas dos projetos no disco <strong>não</strong> são apagados.</p>
+            <p>A aba CLI's (aprovações e políticas) é mantida.</p>
+          </div>
+          <footer className="modal-footer"><button className="button button--secondary" onClick={() => setModal(null)}>Cancelar</button><button className="button button--danger-solid" onClick={() => void clearWorkspace()}><Trash2 size={15} /> Limpar workspace</button></footer>
+        </Modal>
       )}
       {modal === 'remove' && selectedAgent && <RemoveAgentDialog agent={selectedAgent} onClose={() => setModal(null)} onConfirm={() => removeAgent(selectedAgent.id)} />}
       {modal === 'settings' && (
@@ -117,9 +127,9 @@ function Shell() {
           <div className="settings-list">
             <label><span><strong>Grade de alinhamento</strong><small>Exibe pontos e encaixa os nós na grade.</small></span><input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} /></label>
             <label><span><strong>Minimapa</strong><small>Mostra a visão geral e permite navegar.</small></span><input type="checkbox" checked={showMinimap} onChange={(e) => setShowMinimap(e.target.checked)} /></label>
-            <div className="settings-scope"><span>PERMISSÃO DO GERENTE</span><strong>Autonomia total no workspace</strong><small>Escopo confinado ao workspace do projeto ativo: {activeProject?.path}</small></div>
+            <div className="settings-scope"><span>PERMISSÃO DO GERENTE</span><strong>Autonomia total no workspace</strong><small>Escopo confinado ao workspace do projeto ativo: {activeProject?.path ?? 'nenhum projeto ativo (crie um na aba Projects)'}</small></div>
           </div>
-          <footer className="modal-footer"><button className="button button--secondary" onClick={resetDemo}>Restaurar dados iniciais</button><button className="button button--primary" onClick={() => setModal(null)}>Concluir</button></footer>
+          <footer className="modal-footer"><button className="button button--secondary" onClick={resetDemo}>Carregar demonstração</button><button className="button button--danger-solid" onClick={() => setModal('clear')}><Trash2 size={15} /> Limpar workspace</button><button className="button button--primary" onClick={() => setModal(null)}>Concluir</button></footer>
         </Modal>
       )}
       <Toaster position="bottom-center" toastOptions={{ className: 'vertice-toast' }} />

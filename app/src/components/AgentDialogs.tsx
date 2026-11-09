@@ -18,7 +18,9 @@ export function CreateAgentDialog({ agents, serviceOnline, scopePath, onClose, o
   const [runtime, setRuntime] = useState('Claude Code')
   const [model, setModel] = useState('claude-sonnet')
   const [prompt, setPrompt] = useState('')
-  const [parentId, setParentId] = useState('gerente')
+  // Sem gerente no workspace, o primeiro agente criado é o agente principal (sem supervisor).
+  const hasManager = agents.some((agent) => agent.kind === 'manager')
+  const [parentId, setParentId] = useState(() => agents.find((agent) => agent.kind === 'manager')?.id ?? agents[0]?.id ?? '')
   const [submitted, setSubmitted] = useState(false)
 
   const submit = (event: React.FormEvent) => {
@@ -36,7 +38,7 @@ export function CreateAgentDialog({ agents, serviceOnline, scopePath, onClose, o
           <label>Função<input value={role} onChange={(e) => setRole(e.target.value)} placeholder="Ex.: Documentação técnica" aria-invalid={submitted && !role.trim()} />{submitted && !role.trim() && <small className="field-error">Informe uma função.</small>}</label>
           <label>Runtime<select value={runtime} onChange={(e) => { setRuntime(e.target.value); setModel(e.target.value === 'Ollama' ? 'qwen3:14b' : e.target.value === 'LM Studio' ? 'local-model' : e.target.value === 'Codex CLI' ? 'gpt-codex' : e.target.value === 'Kimi CLI' ? 'kimi-k2' : e.target.value === 'GLM CLI' ? 'glm-4.6' : 'claude-sonnet') }}><option>Claude Code</option><option>Codex CLI</option><option>Kimi CLI</option><option>GLM CLI</option><option>Antigravity CLI</option><option>OpenCode</option><option>Ollama</option><option>LM Studio</option></select></label>
           <label>Modelo<input value={model} onChange={(e) => setModel(e.target.value)} /></label>
-          <label>Supervisor<select value={parentId} onChange={(e) => setParentId(e.target.value)}>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
+          <label>Supervisor<select value={parentId} onChange={(e) => setParentId(e.target.value)}>{!hasManager && <option value="">Nenhum (agente principal / Gerente)</option>}{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
           <div className="form-scope"><span>ESCOPO</span><strong>{scopePath ?? 'workspace do projeto ativo'}</strong><small>Autonomia total herdada do workspace</small></div>
         </div>
         <label className="prompt-field">Instrução de sistema<textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Descreva como este agente deve trabalhar, o que deve entregar e quando reportar ao supervisor." aria-invalid={submitted && !prompt.trim()} />{submitted && !prompt.trim() && <small className="field-error">Descreva a instrução inicial.</small>}</label>

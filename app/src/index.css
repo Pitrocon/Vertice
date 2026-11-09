@@ -278,6 +278,15 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .terminal-line--command span { color: var(--accent-warm); }
 .terminal-line--success { color: var(--primitive-sage); }
 .terminal-line--muted { color: var(--text-secondary); }
+.live-terminal { flex: 1; min-height: 0; overflow: hidden; padding: 8px 12px; }
+.live-terminal:focus-within { outline: 1px solid var(--accent); outline-offset: -1px; }
+.live-terminal .xterm { height: 100%; }
+.live-terminal .xterm-viewport { background-color: transparent !important; }
+.terminal-keys { flex: none; display: flex; align-items: center; gap: 6px; padding: 6px 14px; border-top: 1px solid var(--border-subtle); font-family: var(--font-mono); }
+.terminal-keys__label { margin-right: auto; color: var(--text-secondary); font-size: 8px; letter-spacing: 0.08em; }
+.terminal-keys__button { height: 24px; padding: 0 9px; border: 1px solid var(--border-subtle); border-radius: 5px; background: transparent; color: var(--accent); font-family: inherit; font-size: 10px; cursor: pointer; }
+.terminal-keys__button:hover { border-color: var(--accent); background: oklch(0.3 0.04 255 / 0.35); }
+.terminal-keys__button:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 .terminal-input { min-height: 40px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-top: 1px solid var(--border-subtle); font-family: var(--font-mono); }
 .terminal-input label { color: var(--accent-warm); font-size: 9px; white-space: nowrap; max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
 .terminal-input input { flex: 1; min-width: 0; height: 38px; border: 0; outline: 0; background: transparent; color: var(--text-primary); font-size: 10px; }

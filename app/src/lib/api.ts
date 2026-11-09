@@ -87,12 +87,28 @@ export const api = {
     return get<WorkspaceSnapshot>('/api/workspace')
   },
 
+  async clearWorkspace(): Promise<WorkspaceSnapshot | null> {
+    return request<WorkspaceSnapshot>('POST', '/api/workspace/clear')
+  },
+
   async resetWorkspace(): Promise<WorkspaceSnapshot | null> {
     return request<WorkspaceSnapshot>('POST', '/api/workspace/reset')
   },
 
-  async createProject(input: { id?: string; name: string; path: string; description: string }): Promise<WorkspaceSnapshot | null> {
-    return request<WorkspaceSnapshot>('POST', '/api/projects', input)
+  // Retorna a mensagem de erro do core (ex.: caminho de sistema recusado com 403) para a UI exibir.
+  async createProject(input: { id?: string; name: string; path: string; description: string }): Promise<{ snapshot: WorkspaceSnapshot | null; error?: string }> {
+    try {
+      const res = await fetch(`${BASE}/api/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      })
+      const data = await res.json().catch(() => null)
+      if (!res.ok) return { snapshot: null, error: (data as { error?: string } | null)?.error ?? `Falha ao criar o projeto (HTTP ${res.status}).` }
+      return { snapshot: data as WorkspaceSnapshot }
+    } catch {
+      return { snapshot: null, error: 'Serviço local indisponível.' }
+    }
   },
 
   async activateProject(id: string): Promise<WorkspaceSnapshot | null> {
@@ -174,6 +190,11 @@ export const api = {
 
   async sendInput(sessionId: string, data: string): Promise<boolean> {
     const res = await request<{ ok: boolean }>('POST', `/api/sessions/${sessionId}/input`, { data })
+    return res?.ok === true
+  },
+
+  async resizeSession(sessionId: string, cols: number, rows: number): Promise<boolean> {
+    const res = await request<{ ok: boolean }>('POST', `/api/sessions/${sessionId}/resize`, { cols, rows })
     return res?.ok === true
   },
 
