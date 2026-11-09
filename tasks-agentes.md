@@ -293,7 +293,7 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
      - **Correção:** Adicionar `"postinstall": "node node_modules/electron/install.js"` nos `scripts` de `installers/electron/package.json` e adicionar `out/` ao `.gitignore` da raiz.
   - **Aceite:** `npm run dist` (ou `npm run pack`) gera `out\win-unpacked\Vértice.exe` contendo `resources\core\node_modules\express`, `ws` e `node-pty`; ao iniciar `Vértice.exe`, `GET http://localhost:7845/api/health` e `GET http://localhost:7845/api/runtimes` respondem `200 OK` sem `ReferenceError` e a janela navega entre as 5 abas sem quebrar no reload.
 
-- [~] **E13** (ORQ + FRONT — 06/11/2026: IMPLEMENTADO; testado com relógio simulado (monitor), ligação ao orquestrador e banco real; NÃO validado com uma CLI real (PTY e login indisponíveis no sandbox) — **PRIORIDADE IMEDIATA · FECHA TAMBÉM A B3**) — **Mover automaticamente as tarefas em andamento (`doing`) para "Aguardando aprovação" (`review`) assim que a IA terminar a execução (`core/src/orchestrator.js` + `app/src/store/workspace.tsx` + `app/src/pages/Work.tsx`):**
+- [x] **E13** (ORQ + FRONT — 09/11/2026: IMPLEMENTADO E VALIDADO EM EXECUÇÃO REAL NO `Vértice.exe` EMPACOTADO. Ajustado `echoMs` em `task-monitor.js` para iniciar após o envio da instrução (`\r`) e unificado `registerAgentSession`/`trackedBroadcast` em `index.js`; testado `doing` → `review` automático com captura de `result` e retorno do agente para `idle`) — **Mover automaticamente as tarefas em andamento (`doing`) para "Aguardando aprovação" (`review`) assim que a IA terminar a execução (`core/src/orchestrator.js` + `app/src/store/workspace.tsx` + `app/src/pages/Work.tsx`):**
   Hoje, quando uma tarefa é despachada (`dispatchWorkItem`), ela entra em `doing` ("Em andamento") e envia a instrução para a sessão PTY da CLI do agente, mas **nunca avança sozinha para `review` ("Aguardando aprovação")** quando a IA termina de responder/executar — exigindo que o usuário mova o card manualmente.
   - **O que implementar no Backend (`core/src/orchestrator.js`):**
     1. **Rastreador de tarefa ativa por sessão (`activeSessionTasks`):**
@@ -311,6 +311,60 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
     1. Em `workspace.tsx`: ao receber o evento WebSocket `task-updated` (quando uma tarefa que estava em `doing` passa para `review`), exibir um toast informativo (`toast.success('Tarefa concluída pela IA → Aguardando aprovação')`).
     2. Em `Work.tsx` (`WorkCard`): quando `item.status === 'review'` (ou `done`) e `item.result` existir, exibir um pequeno resumo/prévia limpa (1–2 linhas truncadas) no card para o gestor ver o que a IA entregou antes de aprovar (`→ Concluído`).
   - **Aceite:** Ao despachar uma tarefa para um agente (`doing`), assim que o agente/CLI termina a execução da entrega (seja por `[TAREFA_CONCLUIDA]`, retorno de prompt ou fim do stream da resposta da IA), o card migra sozinho em tempo real para a coluna **"Aguardando aprovação" (`review`)**, o status do agente volta a **"Disponível" (`idle`)** e o evento/resultado fica salvo no SQLite.
+
+- [ ] **E14** (CORE + FRONT — **PRIORIDADE IMEDIATA · BUGS ENCONTRADOS PELO USUÁRIO AO REABRIR O PROGRAMA**) — **Correção do terminal fantasma na reabertura + Edição completa de Agentes, Tarefas e Projetos + Biblioteca de Prompts Salvos (`core/src/db.js`, `core/src/index.js`, `workspace.tsx`, `AgentDialogs.tsx`, `Agentes.tsx`, `Inspector.tsx`, `Work.tsx`, `Projects.tsx`):**
+  O usuário testou o aplicativo instalado, fechou e reabriu, e reportou **3 problemas**:
+
+  1. **Bug 1 — Ao reabrir com apenas 1 agente criado (`Tester`), o terminal dele exibe texto falso de demonstração (`"Vértice shell — ambiente de demonstração / Workspace: C:\work\atlas / 5 agentes · 3 executando..."`) e agentes ficam com status `"working"` fantasma sem sessão:**
+     - **Causa raiz identificada:**
+       - Em `workspace.tsx` linha 267, quando o usuário cria o 1º agente principal (ex.: `Tester`), `createAgent` força `id = 'gerente'`.
+       - Em `workspace.tsx` linha 114, `terminalLines` inicia com `{ gerente: initialTerminalLines }` (que contém `Workspace: C:\work\atlas` e `5 agentes · 3 executando...`).
+       - Ao reabrir o programa com 1 agente (`snapshot.agents.length === 1`), `if (snapshot.agents.length === 0) setTerminalLines({})` na linha 138 **não roda**, fazendo o agente `Tester` (`id: 'gerente'`) herdar as linhas falsas de `initialTerminalLines`!
+       - Além disso, no boot do `core/src/db.js`, agentes que estavam `status = 'working'` antes de fechar o app continuam marcados como `working` no SQLite mesmo sem nenhuma sessão PTY viva na memória.
+     - **Correção obrigatória:**
+       - Em `workspace.tsx`: inicializar `terminalLines` como `{}` vazio (`useState<Record<string, TerminalLine[]>>({})`), usando `initialTerminalLines` **apenas** dentro de `resetDemo()`.
+       - Em `workspace.tsx` (`createAgent`): gerar sempre o `id` a partir do `slug` do nome do agente (`${slug}-${Date.now().toString(36)}`), sem forçar `id = 'gerente'` quando o usuário deu outro nome (como `Tester`).
+       - Em `core/src/db.js` (no boot, logo após `runMigrations()`): resetar `UPDATE agents SET status = 'idle' WHERE status = 'working'` e `UPDATE sessions SET status = 'ended', ended_at = ? WHERE status = 'running'` (já que processos PTY não sobrevivem ao fechamento do processo).
+
+  2. **Bug 2 — Depois de criados, não é possível editar Tarefas, Agentes nem Projetos:**
+     - **Causa raiz:** Faltam os botões/modais de edição na UI e as rotas de edição/exclusão de projetos e tarefas no backend.
+     - **O que implementar:**
+       - **Editar Agente (`AgentDialogs.tsx` + `Agentes.tsx` + `Inspector.tsx` + `workspace.tsx`):**
+         - Criar `EditAgentDialog` (ou modo de edição no `CreateAgentDialog`) permitindo editar **Nome (`name`), Função (`role`), Runtime (`runtime`), Modelo (`model`), Supervisor (`parentId` / conexão) e Instrução de sistema (`prompt`)** via `PATCH /api/agents/:id` (`api.patchAgent`).
+         - Se o supervisor (`parentId`) mudar, atualizar a conexão correspondente no backend/store.
+         - Adicionar botão **"Editar"** no card do agente em `Agentes.tsx` (inclusive no card do `manager`!) e no painel `Inspector.tsx` (no `Organograma`). Também permitir remover qualquer agente (inclusive se for `manager`, ajustando `deleteAgent` em `core/src/db.js` e `workspace.tsx` para permitir excluir ou editar o gerente).
+       - **Editar e Excluir Tarefas e Metas (`Work.tsx` + `core/src/db.js` + `core/src/index.js` + `api.ts` + `workspace.tsx`):**
+         - No backend (`db.js` + `index.js`), adicionar `DELETE /api/work-items/:id` (`deleteWorkItem`), `PATCH /api/goals/:id` (`patchGoal`) e `DELETE /api/goals/:id` (`deleteGoal` — limpando `goal_id` das tarefas vinculadas). (O `PATCH /api/work-items/:id` já existe no backend!).
+         - Na UI (`Work.tsx`), adicionar botão **"Editar"** (e botão de excluir) em cada `WorkCard`, abrindo um modal para alterar **Título (`title`), Responsável (`assigneeId`), Meta (`goalId`), Prioridade (`priority`) e Status (`status`)**, além de permitir editar/excluir metas nos `goal-card`.
+       - **Editar e Excluir Projetos (`Projects.tsx` + `core/src/db.js` + `core/src/index.js` + `api.ts` + `workspace.tsx`):**
+         - No backend (`db.js` + `index.js`), adicionar `PATCH /api/projects/:id` (`patchProject`: valida `path` com `assertSafeProjectPath`, atualiza `name`, `path`, `description` e registra o novo `path` em `allowed_workspaces`) e `DELETE /api/projects/:id` (`deleteProject`: se era o ativo e restar outro projeto, ativa o próximo).
+         - Na UI (`Projects.tsx`), adicionar botões **"Editar"** e **"Excluir"** em cada card de projeto.
+
+  3. **Item 3 — Biblioteca de Prompts Salvos + "Memória Viva" Contínua da Conversa entre Reinicializações:**
+     - **Por que apenas salvar o `prompt` inicial não basta para manter o contexto da conversa:**
+       Quando o aplicativo fecha ou o PC reinicia, o processo PTY da CLI encerra. Se ao reabrir o programa e iniciar a sessão a CLI subir em branco, tanto a tela do terminal quanto a IA terão esquecido tudo o que foi conversado na sessão anterior!
+     - **O que implementar para garantir "Memória Viva" (Contexto Persistente da Conversa):**
+       1. **Persistência automática da conversa e memória no SQLite + Arquivo no Workspace (`core/src/db.js`, `core/src/sessions.js`, `core/src/orchestrator.js`):**
+          - Adicionar na tabela `agents` (via migração em `db.js`) as colunas `memory TEXT` (resumo vivo de entregas/contexto acumulado) e `last_transcript TEXT` (últimos ~15.000 caracteres limpos do terminal daquele agente).
+          - Durante qualquer sessão ativa (`onData` / `trackedBroadcast`), salvar com debounce (~2s) e também no encerramento da sessão (`exit` / `killSession` / `endAllSessions`) a transcrição limpa da conversa em `agents.last_transcript` no SQLite e espelhar num arquivo real dentro do workspace do projeto ativo: `.vertice/memory/<agentId>.md` (contendo: Papel e Prompt do agente + Tarefas já realizadas com resultados + Última conversa do terminal antes de fechar).
+          - Ao concluir qualquer tarefa (`completeWorkItem`), anexar automaticamente em `agents.memory` (e no `.vertice/memory/<agentId>.md`) o registro `[Data/Hora] Tarefa concluída: <título> → <resumo do result>`.
+       2. **Restauração visual do histórico do terminal ao reabrir o programa (`workspace.tsx` + `TerminalPanel.tsx`):**
+          - Incluir `memory` e `lastTranscript` no `mapAgent` (`WorkspaceSnapshot`).
+          - No `applySnapshot` (`workspace.tsx`), para cada agente que tenha `lastTranscript` salvo no SQLite e ainda não tenha linhas carregadas na sessão atual, popular `terminalLines[agent.id]` com as linhas da conversa anterior seguidas de `— Memória Viva carregada · contexto anterior preservado —` (e também pré-carregar no buffer do `LiveTerminal` quando aplicável), para que o usuário reabra o programa e veja imediatamente toda a conversa de onde parou!
+       3. **Injeção automática da Memória Viva ao reabrir uma sessão da CLI (`core/src/orchestrator.js` + `core/src/index.js`):**
+          - Quando uma nova sessão PTY é iniciada para um agente (seja via `POST /api/sessions` no botão "Iniciar sessão real" do Inspector, seja via `dispatchWorkItem` no quadro Work) e o agente já possui `memory` ou `last_transcript` de antes de fechar o programa:
+          - Assim que a CLI terminar de subir (`waitForSessionReady`), enviar automaticamente (ou injetar no primeiro turno/despacho) o contexto de retomada da **Memória Viva** (referenciando `.vertice/memory/<agentId>.md` e os últimos trechos da conversa/tarefas anteriores), para que **a IA continue exatamente com o contexto da conversa que tinha antes de fechar o programa**!
+          - No `Inspector.tsx` (e no modal de editar agente), exibir a seção/aba **"Memória Viva"** mostrando o contexto acumulado do agente e permitindo editá-lo manualmente ou clicar em "Limpar memória deste agente".
+       4. **Biblioteca de Prompts Salvos (`promptTemplates` em `settings`):**
+          - No modal de **Criar / Editar Agente** (`AgentDialogs.tsx`), adicionar seletor **"Carregar prompt salvo"** + botão **"Salvar prompt na biblioteca"** persistido em `settings.promptTemplates` no SQLite (nunca apagado nem ao usar `clearWorkspaceData()`).
+       5. **Persistência robusta no boot (`workspace.tsx`):**
+          - Adicionar retry automático de conexão no boot do `workspace.tsx` (a cada 1.5s caso o `vertice-core` ainda esteja subindo) para garantir que os agentes e sua Memória Viva sempre carreguem do SQLite.
+  - **Aceite:**
+    1. Criar 1 agente (`Tester`), conversar com ele no terminal (ou executar uma tarefa), **fechar o programa e abrir de novo**:
+       - O agente `Tester` continua lá com seu histórico de conversa visível no terminal (sem texto falso `5 agentes · 3 executando`);
+       - Ao iniciar novamente a sessão real de `Tester` (ou enviar nova tarefa), a IA recebe automaticamente a **Memória Viva** (`.vertice/memory/<agentId>.md` + contexto da conversa anterior) e sabe responder sobre o que foi conversado antes de fechar!
+    2. Conseguir editar (e excluir) qualquer Agente, Tarefa, Meta e Projeto pela UI, com tudo persistido no SQLite.
+    3. Conseguir salvar um prompt na biblioteca de prompts da tela de criar/editar agente e reutilizá-lo com 1 clique.
 
 ---
 

@@ -387,3 +387,48 @@ Revisão de leitura do core/app encontrou, e CONFIRMOU rodando contra o servidor
 - **Frontend:** `WorkItem.result?`; toast "Tarefa concluída pela IA → Aguardando aprovação" só quando o evento traz `auto: true` (conclusão manual não duplica); card em `review`/`done` mostra as 2 últimas linhas do resultado (`.work-card__result`, completo no `title`).
 - **Verificação:** monitor com relógio simulado (23 casos: eco ignorado, palavra sem colchetes ≠ marcador, marcador no meio de frase ≠ marcador, borda de TUI, silêncio e reinício do timer, spinner, prompts bloqueantes e liberação, PowerShell, exit 0/1/imediato, cancelamento, conclui 1x, ANSI/CR/duplicatas/limite 1500); ligação ao orquestrador extraindo o código real (marcador, silêncio, exit, usuário já moveu a tarefa → não sobrescreve, cancelamento manual, segunda tarefa na sessão, sem reconclusão); `completeWorkItem` real com banco temporário (review, resultado salvo, agente `idle` só quando não há outra `doing`, flag `auto` só no automático); `tsc -b` e `eslint .` exit 0.
 - **NÃO verificado:** nenhuma CLI real (PTY e login indisponíveis no sandbox). Os padrões de prompt, os tempos e a obediência de cada IA ao pedido do marcador são HEURÍSTICAS: uma CLI que fique quieta >4,5 s "pensando" pode ser concluída cedo; uma que ignore o pedido só conclui por silêncio. Ajustar `idleMs`/`echoMs` com o uso real. A saída ainda traz ruído de TUI (bordas, rodapés). Alterações NÃO commitadas.
+
+
+### [09/11/2026] Auditoria E13 + Atualização Final do Instalador (`Vertice-Setup-0.1.0.exe`)
+
+- **Auditoria e refinamento em `core/src/task-monitor.js`, `core/src/orchestrator.js` e `core/src/index.js`:**
+  - Durante o teste real no `Vértice.exe` empacotado, identificamos que `echoMs = 1500` iniciado antes de `writeToSession` descartava respostas rápidas (< 1.5s, como retorno imediato de prompt ou comandos rápidos), e sessões abertas pelo botão "Iniciar sessão real" do Inspector (`POST /api/sessions` em `index.js`) usavam `onEvent: broadcast` em vez de `trackedBroadcast`.
+  - **Correções aplicadas:**
+    1. Em `orchestrator.js`, `startTaskMonitor` passa a iniciar imediatamente antes do envio do `\r` (após os 200ms de digitação da instrução, quando o eco já ocorreu).
+    2. Em `task-monitor.js`, `echoMs` passou a `0` por padrão com remoção explícita da `instruction` caso reapareça no buffer, verificação de `MARKER_LINE` (`[TAREFA_CONCLUIDA]`) antes de `minResponseChars`, e liberação de `arm()` no retorno do prompt `PS ...>` mesmo em saídas curtas.
+    3. Em `index.js` (`POST /api/sessions`), sessões abertas pelo Inspector usam `onEvent: trackedBroadcast` e chamam `registerAgentSession(agentId, session.id)` para que o despachante reutilize a sessão aberta e monitore suas tarefas.
+- **Teste real ponta a ponta no `Vértice.exe` empacotado:**
+  - `AFTER_DISPATCH: status=doing agent=working` → após 2s: **`AFTER_AUTO_COMPLETE: status=review agent=idle`** com `result` capturado e salvo no SQLite, e banco limpo em seguida (`POST /api/workspace/clear`).
+- **Instalador atualizado:**
+  - `npm run build` em `vertice/app` (`0` erros, 3.00s) + `electron-builder --win --x64` em `vertice/installers/electron` → **`out\Vertice-Setup-0.1.0.exe`** atualizado e pronto para instalação/distribuição.
+
+
+### [09/11/2026] Nova Task E14 (`6.12`) — Bugs na Reabertura do App + Edição de Agentes/Tarefas/Projetos + Biblioteca de Prompts Salvos
+
+- **Relato do usuário (com print anexado):**
+  1. Ao reabrir o programa tendo apenas **1 agente criado (`Tester`)**, o terminal de `Tester` exibiu texto falso de demonstração (`"Vértice shell — ambiente de demonstração / Workspace: C:\work\atlas / PS> vertice status --team / 5 agentes · 3 executando..."`) e o agente apareceu rodando sem sessão.
+  2. Depois de criados, **não é possível editar as Tarefas, nem o Agente e nem os Projetos**.
+  3. O sistema de logs e persistência ao fechar/reabrir funcionou muito bem, mas o usuário quer **uma área para salvar os prompts na tela de criar/editar a IA**, garantindo também que os agentes/prompts nunca se desfaçam ao reiniciar o computador ou fechar o programa.
+
+- **Diagnóstico técnico e especificação registrada em `tasks-agentes.md` (`E14`) e `tasks.md` (`6.12`):**
+  1. **Causa raiz do Bug 1 (print do terminal de `Tester`):**
+     - Em `workspace.tsx:267`, `createAgent` atribuiu `id = 'gerente'` ao 1º agente criado pelo usuário (`Tester`).
+     - Em `workspace.tsx:114`, `terminalLines` inicializa com `{ gerente: initialTerminalLines }` (que contém `Workspace: C:\work\atlas` e `5 agentes · 3 executando...`).
+     - Ao reabrir o app com 1 agente (`snapshot.agents.length === 1`), `if (snapshot.agents.length === 0) setTerminalLines({})` (`workspace.tsx:138`) não limpou `terminalLines.gerente`, injetando o texto falso da demo dentro do terminal do agente `Tester`!
+     - Além disso, no boot de `core/src/db.js`, agentes que estavam `status = 'working'` ao fechar o programa continuam marcados como `working` no SQLite sem processo PTY vivo.
+     - **Solução:** Inicializar `terminalLines` como `{}` em `workspace.tsx`, usar `${slug}-${Date.now().toString(36)}` como `id` em `createAgent`, e no boot de `db.js` resetar `UPDATE agents SET status = 'idle' WHERE status = 'working'` e `UPDATE sessions SET status = 'ended' WHERE status = 'running'`.
+  2. **Solução do Bug 2 (Edição completa de Agentes, Tarefas, Metas e Projetos):**
+     - Adicionar `EditAgentDialog` (ou modo edição em `CreateAgentDialog`) + botões **"Editar"** em `Agentes.tsx` e `Inspector.tsx` (incluindo edição e exclusão do agente `manager`).
+     - Adicionar edição/exclusão de Tarefas e Metas em `Work.tsx` + rotas `DELETE /api/work-items/:id`, `PATCH /api/goals/:id` e `DELETE /api/goals/:id` no backend.
+     - Adicionar edição/exclusão de Projetos em `Projects.tsx` + rotas `PATCH /api/projects/:id` (validando `path` com `assertSafeProjectPath` e registrando em `allowed_workspaces`) e `DELETE /api/projects/:id` no backend.
+  3. **Solução do Item 3 (Biblioteca de Prompts Salvos + Persistência no Boot):**
+     - Persistir modelos de prompts no SQLite (`settings.promptTemplates` ou tabela `prompt_templates`, preservados mesmo em `clearWorkspaceData()`) e exibir na tela de Criar/Editar Agente (`AgentDialogs.tsx`) controles para **"Salvar prompt"** e **"Carregar prompt salvo"** (com 1 clique).
+     - Adicionar retry automático de conexão no boot do `workspace.tsx` caso o `vertice-core` ainda esteja subindo no primeiro instante da abertura.
+
+  4. **Complemento Essencial na E14 — "Memória Viva" Contínua da Conversa entre Reinicializações:**
+     - **Solicitação explícita do usuário:** *"Tudo isso garante que ele vai ter o contexto da conversa antes de ela fechar? Gostaria de memória viva"*.
+     - **Arquitetura de Memória Viva adicionada à E14 (`tasks-agentes.md` e `tasks.md`):**
+       - **Persistência contínua (`db.js` + `sessions.js` + `orchestrator.js`):** Colunas `memory TEXT` e `last_transcript TEXT` na tabela `agents` + espelhamento automático em `.vertice/memory/<agentId>.md` dentro do workspace do projeto ativo. Durante a sessão (`onData` com debounce ~2s e no `exit`/`killSession`), a conversa limpa é salva no SQLite e no arquivo `.vertice/memory/<agentId>.md` (junto com o histórico de tarefas concluídas por aquele agente).
+       - **Restauração visual no Terminal (`workspace.tsx` + `TerminalPanel.tsx`):** Ao reabrir o Vértice, `applySnapshot` carrega `agent.lastTranscript` para dentro de `terminalLines[agent.id]`, exibindo toda a conversa anterior na tela com o marcador `— Memória Viva carregada · contexto anterior preservado —`.
+       - **Retomada de contexto pela IA (`orchestrator.js` + `index.js`):** Quando o usuário inicia uma nova sessão real (`POST /api/sessions` ou `dispatchWorkItem`) para um agente que já possui `memory` / `last_transcript` da sessão anterior, o core injeta automaticamente (após `waitForSessionReady`) o contexto da **Memória Viva** (referenciando `.vertice/memory/<agentId>.md` e o resumo/últimos turnos da conversa anterior), garantindo que a IA continue a conversa sabendo exatamente o que foi discutido e feito antes de fechar o programa!
+       - **Inspeção e edição da Memória Viva (`Inspector.tsx`):** Aba/seção no Inspector permitindo ao usuário ler, editar ou limpar a Memória Viva acumulada de cada agente.
