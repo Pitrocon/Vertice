@@ -4,3 +4,5 @@ out/
 *.local
 vertice.config.json
 dist-out/
+release/
+release-final/
