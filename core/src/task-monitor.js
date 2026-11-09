@@ -42,6 +42,14 @@ export function stripAnsi(text) {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
 }
 
+// Só chunks com pelo menos isto (em letras/números) podem ser descartados como eco; pedaços menores
+// (uma tecla, um spinner) não valem a pena e poderiam coincidir com uma resposta curta de verdade.
+const MIN_ECHO_CHARS = 6
+
+function normalizeForEcho(text) {
+  return String(text).toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+}
+
 const MAX_RESPONSE_CHARS = 30000
 const MAX_RESULT_CHARS = 1500
 
@@ -64,10 +72,24 @@ export function createTaskMonitor({
   const startedAt = now()
   const isPowerShell = runtimeId === 'powershell'
   const cleanInstruction = instruction ? stripAnsi(instruction).trim() : ''
+  const normalizedInstruction = normalizeForEcho(cleanInstruction)
   let response = ''
   let responseChars = 0
   let timer = null
   let done = false
+
+  // O chunk é só eco da instrução? Compara apenas letras e números: assim vale mesmo com o eco
+  // dividido em vários chunks, quebrado em linhas com bordas de TUI ou redesenhado em prefixos
+  // (a caixa de entrada de algumas CLIs se redesenha a cada tecla).
+  function looksLikeEcho(text) {
+    if (!normalizedInstruction) return false
+    // A palavra do marcador faz parte da instrução ("...a palavra TAREFA_CONCLUIDA entre colchetes"),
+    // então o marcador REAL da IA, inclusive se vier dividido em pedaços ("[TAREFA_" + "CONCLUIDA]"),
+    // seria confundido com eco. O eco da instrução não tem colchetes; um pedaço com colchete nunca é eco.
+    if (/[\[\]]/.test(text)) return false
+    const normalized = normalizeForEcho(text)
+    return normalized.length >= MIN_ECHO_CHARS && normalizedInstruction.includes(normalized)
+  }
 
   const lastLines = (count) => response.split('\n').map((line) => line.trimEnd()).filter((line) => line.trim() !== '').slice(-count)
 
@@ -141,6 +163,8 @@ export function createTaskMonitor({
       if (!clean) return
       if (cleanInstruction && clean.includes(cleanInstruction)) {
         clean = clean.replace(cleanInstruction, '')
+      } else if (looksLikeEcho(clean)) {
+        return
       }
       response += clean
       if (response.length > MAX_RESPONSE_CHARS) response = response.slice(-MAX_RESPONSE_CHARS)
