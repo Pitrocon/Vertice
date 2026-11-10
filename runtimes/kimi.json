@@ -5,7 +5,7 @@
   "command": "kimi",
   "versionArgs": ["--version"],
   "sessionArgs": [],
-  "install": "npm install -g @moonshot-ai/kimi-code",
+  "install": "irm https://code.kimi.com/install.ps1 | iex",
   "http": null,
   "authenticates": true,
   "order": 3

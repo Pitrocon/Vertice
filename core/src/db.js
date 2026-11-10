@@ -1,4 +1,4 @@
-﻿import { DatabaseSync } from 'node:sqlite'
+import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -116,7 +116,7 @@ function columnExists(table, column) {
 }
 
 const DEFAULT_SETTINGS = {
-  approvedRuntimes: ['claude', 'codex', 'kimi', 'powershell'],
+  approvedRuntimes: ['claude', 'codex', 'kimi', 'glm', 'antigravity', 'opencode', 'ollama', 'lmstudio', 'powershell'],
   policies: { allowDestructiveCommands: false, allowNetwork: true, allowCredentials: false },
 }
 

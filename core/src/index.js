@@ -72,27 +72,49 @@ app.post('/api/runtimes/:id/install', async (req, res) => {
   const runtime = RUNTIME_CATALOG.find((item) => item.id === req.params.id)
   if (!runtime) return res.status(404).json({ error: 'Runtime não encontrado no catálogo' })
 
-  // Confinamento: so instala runtimes aprovados pelo TI.
-  const approved = getSetting('approvedRuntimes') ?? []
-  if (!approved.includes(runtime.id)) {
-    return res.status(403).json({ error: `O runtime "${runtime.id}" não está aprovado pelo TI.` })
-  }
   if (!runtime.install) {
     return res.status(400).json({ error: `Não há comando de instalação oficial para "${runtime.id}".` })
   }
 
+  // Ao clicar em Instalar na aba CLI's, aprova automaticamente o runtime caso ainda não esteja na lista.
+  const approved = getSetting('approvedRuntimes') ?? []
+  if (!approved.includes(runtime.id)) {
+    setSetting('approvedRuntimes', [...approved, runtime.id])
+  }
+
+  // Prepara o script PowerShell: garante TLS 1.2, recarrega o PATH do sistema/usuário e, se o comando
+  // exigir `npm` em uma máquina que ainda não tem Node.js instalado, instala o Node.js LTS via winget.
+  const needsNpm = /^\s*npm\s+/i.test(runtime.install)
+  const psScript = [
+    '$ErrorActionPreference = "Stop"',
+    '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12',
+    '$env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User") + ";$env:ProgramFiles\\nodejs;$env:APPDATA\\npm"',
+    ...(needsNpm ? [
+      'if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue) -and -not (Get-Command npm -ErrorAction SilentlyContinue)) {',
+      '  if (Get-Command winget -ErrorAction SilentlyContinue) {',
+      '    winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements --silent',
+      '    $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User") + ";$env:ProgramFiles\\nodejs;$env:APPDATA\\npm"',
+      '  }',
+      '}',
+      'if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue) -and -not (Get-Command npm -ErrorAction SilentlyContinue)) {',
+      '  throw "Node.js (npm) não está instalado nesta máquina. Instale o Node.js LTS (https://nodejs.org) para instalar esta CLI."',
+      '}',
+    ] : []),
+    runtime.install,
+  ].join('; ')
+
   recordEvent('gerente', `Instalando ${runtime.name}…`, 'system')
   try {
-    // Executa APENAS o comando oficial do catalogo, via PowerShell, sem input do usuario.
+    // Executa APENAS o comando oficial do catalogo, via PowerShell (-ExecutionPolicy Bypass), sem input do usuario.
     await new Promise((resolve, reject) => {
-      execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-Command', runtime.install], { timeout: 180000, windowsHide: true }, (error, stdout, stderr) => {
-        if (error) return reject(new Error((stderr || error.message || '').slice(0, 300)))
+      execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psScript], { timeout: 300000, windowsHide: true }, (error, stdout, stderr) => {
+        if (error) return reject(new Error((stderr || stdout || error.message || '').trim().slice(0, 300)))
         resolve(stdout)
       })
     })
   } catch (error) {
     recordEvent('gerente', `Falha ao instalar ${runtime.name}: ${error.message}`, 'system')
-    return res.status(500).json({ error: `Falha na instalação: ${error.message}` })
+    return res.status(500).json({ error: `Falha ao instalar ${runtime.name}: ${error.message}` })
   }
 
   // Revalida a versao apos instalar.

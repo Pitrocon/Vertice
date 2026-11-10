@@ -237,8 +237,18 @@ export const api = {
     return request<WorkspaceSnapshot>('PATCH', '/api/settings', input)
   },
 
-  async installRuntime(runtimeId: string): Promise<{ runtime: DetectedRuntime; snapshot: WorkspaceSnapshot } | null> {
-    return request<{ runtime: DetectedRuntime; snapshot: WorkspaceSnapshot }>('POST', `/api/runtimes/${runtimeId}/install`)
+  async installRuntime(runtimeId: string): Promise<{ runtime?: DetectedRuntime; snapshot?: WorkspaceSnapshot; error?: string }> {
+    try {
+      const res = await fetch(`${BASE}/api/runtimes/${encodeURIComponent(runtimeId)}/install`, {
+        method: 'POST',
+        headers: authHeaders(),
+      })
+      const data = await res.json().catch(() => null)
+      if (!res.ok) return { error: (data as { error?: string } | null)?.error ?? `Falha na instalação (HTTP ${res.status}).` }
+      return data as { runtime: DetectedRuntime; snapshot: WorkspaceSnapshot }
+    } catch {
+      return { error: 'Serviço local indisponível durante a instalação.' }
+    }
   },
 
   async dispatchWorkItem(id: string): Promise<{ ok: boolean; sessionId?: string; snapshot: WorkspaceSnapshot } | null> {

@@ -5,7 +5,7 @@
   "command": "ollama",
   "versionArgs": ["--version"],
   "sessionArgs": [],
-  "install": "winget install Ollama.Ollama",
+  "install": "winget install Ollama.Ollama --accept-source-agreements --accept-package-agreements",
   "http": "http://localhost:11434/api/tags",
   "authenticates": false,
   "order": 7

@@ -13,11 +13,22 @@ const cliStatusLabels: Record<CliStatus, string> = {
 export function OrgPage() {
   const { serviceOnline, realRuntimes, cliRuntimes, refreshService, terminalLines, liveSessions, settings, updatePolicies, toggleCliApproved, installCli } = useWorkspace()
   const [checking, setChecking] = useState(false)
+  const [installingId, setInstallingId] = useState<string | null>(null)
 
   const verify = async () => {
     setChecking(true)
     await refreshService()
     window.setTimeout(() => setChecking(false), 600)
+  }
+
+  const handleInstall = async (id: string) => {
+    if (installingId) return
+    setInstallingId(id)
+    try {
+      await installCli(id)
+    } finally {
+      setInstallingId(null)
+    }
   }
 
   const rows = serviceOnline && realRuntimes
@@ -89,7 +100,9 @@ export function OrgPage() {
               </span>
               <span>
                 {cli.status === 'missing' && serviceOnline && cli.install && (
-                  <button className="button button--primary button--small" onClick={() => installCli(cli.id)}><Download size={13} /> Instalar</button>
+                  <button className="button button--primary button--small" disabled={installingId !== null} onClick={() => void handleInstall(cli.id)}>
+                    {installingId === cli.id ? <><RefreshCw size={13} className="spin" /> Instalando…</> : <><Download size={13} /> Instalar</>}
+                  </button>
                 )}
                 {cli.status === 'missing' && serviceOnline && !cli.install && <small className="cli-manual">manual</small>}
                 {cli.status === 'missing' && !serviceOnline && <small className="cli-manual">—</small>}

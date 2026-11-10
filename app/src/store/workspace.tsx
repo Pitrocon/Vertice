@@ -610,9 +610,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const installCli = useCallback(async (id: string) => {
     if (serviceOnline) {
+      toast.info(`Instalando ${id}… Isso pode levar de 30 segundos a 2 minutos.`)
       const res = await api.installRuntime(id)
-      if (res) { applySnapshot(res.snapshot); await refreshService(); toast.success(`${res.runtime?.name ?? id} instalado — versão ${res.runtime?.version ?? 'verificada'}`) }
-      else toast.error('Falha na instalação pelo serviço local')
+      if (res.snapshot) {
+        applySnapshot(res.snapshot)
+        await refreshService()
+        toast.success(`${res.runtime?.name ?? id} instalado — versão ${res.runtime?.version ?? 'verificada'}`)
+      } else {
+        toast.error(res.error ?? 'Falha na instalação pelo serviço local')
+      }
       return
     }
     toast.error('Serviço local offline — não é possível instalar de forma real')
