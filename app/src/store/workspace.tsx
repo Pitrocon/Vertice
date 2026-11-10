@@ -1,17 +1,26 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
-import { api, connectEvents, stripAnsi, type DetectedRuntime, type LiveSessionInfo, type WorkspaceSnapshot, type VerticeSettings, type AllowedWorkspace } from '@/lib/api'
+import { api, connectEvents, stripAnsi, type DetectedRuntime, type LiveSessionInfo, type WorkspaceSnapshot, type VerticeSettings, type AllowedWorkspace, type PromptTemplate } from '@/lib/api'
 import {
   initialAgents, initialConnections, initialEvents, initialTerminalLines,
   initialGoals, initialWorkItems, initialProjects, initialCliRuntimes,
 } from '@/data/initial'
 import type {
   Agent, AgentConnection, ActivityEvent, TerminalLine,
-  Goal, WorkItem, Project, CliRuntime, WorkStatus,
+  Goal, WorkItem, Project, CliRuntime, WorkStatus, WorkPriority,
 } from '@/types/agent'
 import type { NewAgentInput } from '@/components/AgentDialogs'
+import { reconcileTerminalLines } from '@/lib/workspace-helpers'
 
-export type ModalName = 'create' | 'manager' | 'commands' | 'settings' | 'remove' | 'clear' | null
+export type ModalName = 'create' | 'edit' | 'manager' | 'commands' | 'settings' | 'remove' | 'clear' | null
+
+export interface WorkItemInput {
+  title: string
+  status: WorkStatus
+  priority: WorkPriority
+  assigneeId?: string
+  goalId?: string
+}
 
 function usePersistentState<T>(key: string, fallback: T) {
   const [value, setValue] = useState<T>(() => {
@@ -55,7 +64,19 @@ interface WorkspaceValue {
   createAgent: (input: NewAgentInput) => void
   delegateToManager: (objective: string) => void
   togglePause: (id: string) => void
-  removeAgent: (id: string) => void
+  removeAgent: (id: string) => Promise<void>
+  updateAgent: (id: string, input: NewAgentInput) => Promise<boolean>
+  saveAgentMemory: (id: string, memory: string) => Promise<boolean>
+  clearAgentMemory: (id: string) => Promise<boolean>
+  updateWorkItem: (id: string, input: WorkItemInput) => Promise<boolean>
+  deleteWorkItem: (id: string) => Promise<boolean>
+  updateGoal: (id: string, input: { title: string; description: string }) => Promise<boolean>
+  deleteGoal: (id: string) => Promise<boolean>
+  updateProject: (id: string, input: { name: string; path: string; description: string }) => Promise<boolean>
+  deleteProject: (id: string) => Promise<boolean>
+  promptTemplates: PromptTemplate[]
+  savePromptTemplate: (name: string, prompt: string) => Promise<boolean>
+  deletePromptTemplate: (id: string) => Promise<boolean>
   runCommand: (command: string) => void
   sendRawKey: (data: string) => void
   resizeAgentSession: (agentId: string, cols: number, rows: number) => void
@@ -93,6 +114,11 @@ const MAX_RAW_OUTPUT = 200_000
 // `data === null` significa "sessão nova: limpar o terminal".
 export type RawOutputListener = (agentId: string, data: string | null) => void
 
+
+// O core pode ainda estar subindo: o boot tenta de novo por ~1 minuto antes de cair no modo offline.
+const BOOT_RETRY_ATTEMPTS = 40
+const BOOT_RETRY_MS = 1500
+
 // Comandos internos do terminal do Vértice; nunca são repassados à sessão real.
 const RESERVED_COMMANDS = new Set(['/help', '/status', '/agents', '/create', '/delegate', '/clear'])
 
@@ -112,7 +138,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [modal, setModal] = useState<ModalName>(null)
   const [terminalOpen, setTerminalOpen] = useState(true)
   const [terminalExpanded, setTerminalExpanded] = useState(false)
-  const [terminalLines, setTerminalLines] = useState<Record<string, TerminalLine[]>>({ gerente: initialTerminalLines })
+  // Começa vazio: as linhas de demonstração só entram em resetDemo(). Antes elas eram de 'gerente' e um
+  // agente real com esse id herdava o texto falso de demonstração ao reabrir o programa.
+  const [terminalLines, setTerminalLines] = useState<Record<string, TerminalLine[]>>({})
   const [showGrid, setShowGrid] = useState(true)
   const [showMinimap, setShowMinimap] = useState(true)
   const [cliRuntimes, setCliRuntimes] = useState<CliRuntime[]>(initialCliRuntimes)
@@ -125,8 +153,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const applySnapshot = useCallback((snapshot: WorkspaceSnapshot | null) => {
     if (!snapshot) return
+    // A última conversa (lastTranscript) só vem no carregamento inicial: vira linhas do terminal e não
+    // fica no estado dos agentes (nem no localStorage), para não pesar a cada atualização.
+    const agentsState = snapshot.agents.map((agent) => {
+      const copy = { ...agent }
+      delete copy.lastTranscript
+      return copy
+    })
     setProjects(snapshot.projects)
-    setAgents(snapshot.agents)
+    setAgents(agentsState)
     setConnections(snapshot.connections)
     setGoals(snapshot.goals)
     setWorkItems(snapshot.workItems)
@@ -134,8 +169,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (snapshot.events) setEvents(snapshot.events)
     // Mantém a seleção se o agente ainda existe; senão seleciona o primeiro (ou ninguém).
     setSelectedId((current) => (current && snapshot.agents.some((agent) => agent.id === current) ? current : (snapshot.agents[0]?.id ?? null)))
-    // Sem agentes não há terminais: descarta linhas de demonstração de agentes que não existem mais.
-    if (snapshot.agents.length === 0) setTerminalLines({})
+    // Memória viva: ao reabrir o programa, cada agente mostra a conversa de antes de fechar.
+    setTerminalLines((current) => reconcileTerminalLines(current, snapshot.agents))
     if (snapshot.settings) setSettings(snapshot.settings)
     if (snapshot.allowedWorkspaces) setAllowedWorkspaces(snapshot.allowedWorkspaces)
   }, [setProjects, setAgents, setConnections, setGoals, setWorkItems])
@@ -193,7 +228,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let mounted = true
     const boot = async () => {
-      const online = await api.health()
+      // O core pode ainda estar subindo (desenvolvimento, ou o PC acabou de ligar): tenta de novo por
+      // ~1 minuto antes de assumir o modo offline de demonstração.
+      let online = await api.health()
+      for (let attempt = 1; !online && mounted && attempt < BOOT_RETRY_ATTEMPTS; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, BOOT_RETRY_MS))
+        if (mounted) online = await api.health()
+      }
       if (!mounted) return
       setServiceOnline(online)
       if (!online) return
@@ -270,7 +311,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const slug = input.name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-')
     // Sem supervisor (`parentId` vazio) = agente principal. Só é permitido quando ainda não há gerente.
     const isPrincipal = !input.parentId
-    const id = isPrincipal && !agents.some((agent) => agent.id === 'gerente') ? 'gerente' : `${slug}-${Date.now().toString(36)}`
+    // O id vem sempre do nome. Antes o 1º agente principal virava "gerente" e herdava o terminal de demonstração.
+    const id = `${slug.replace(/^-+|-+$/g, '') || 'agente'}-${Date.now().toString(36)}`
     const workerCount = agents.filter((agent) => agent.kind === 'worker').length
     const agent: Agent = isPrincipal
       ? {
@@ -390,16 +432,36 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     toast.success(nextStatus === 'paused' ? `${target.name} pausado` : `${target.name} disponível`)
   }, [agents, setAgents, addEvent, serviceOnline, applySnapshot])
 
-  const removeAgent = useCallback((id: string) => {
+  // Remove qualquer agente, inclusive o principal. Quem era subordinado fica sem supervisor e as tarefas
+  // dele ficam sem responsável (o core faz o mesmo no banco).
+  const removeAgent = useCallback(async (id: string) => {
     const target = agents.find((agent) => agent.id === id)
-    if (!target || target.kind === 'manager') return
-    setConnections((current) => current.filter((connection) => connection.source !== id && connection.target !== id))
-    setAgents((current) => current.filter((agent) => agent.id !== id))
-    if (serviceOnline) void api.deleteAgent(id).then(applySnapshot)
-    toast.success(`${target.name} removido da equipe`)
-    setSelectedId(agents.find((agent) => agent.kind === 'manager')?.id ?? null)
+    if (!target) return
     setModal(null)
-  }, [agents, setAgents, setConnections, serviceOnline, applySnapshot])
+    if (serviceOnline) {
+      const { snapshot, error } = await api.deleteAgent(id)
+      if (!snapshot) { toast.error(error ?? 'Não foi possível remover o agente'); return }
+      applySnapshot(snapshot)
+    } else {
+      setConnections((current) => current.filter((connection) => connection.source !== id && connection.target !== id))
+      setAgents((current) => current.filter((agent) => agent.id !== id).map((agent) => (agent.createdBy === id ? { ...agent, createdBy: undefined } : agent)))
+      setWorkItems((current) => current.map((item) => (item.assigneeId === id ? { ...item, assigneeId: undefined } : item)))
+    }
+    setLiveSessions((current) => {
+      if (!current[id]) return current
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
+    setTerminalLines((current) => {
+      if (!current[id]) return current
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
+    toast.success(`${target.name} removido da equipe`)
+    setSelectedId(agents.find((agent) => agent.kind === 'manager' && agent.id !== id)?.id ?? null)
+  }, [agents, setAgents, setConnections, setWorkItems, serviceOnline, applySnapshot])
 
   const runCommand = useCallback((command: string) => {
     const agent = agents.find((item) => item.id === selectedId) ?? agents[0]
@@ -634,6 +696,156 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (res?.ok) { applySnapshot(res.snapshot); toast.success('Tarefa movida para aprovação') }
   }, [serviceOnline, applySnapshot])
 
+  // --- E14: edição, exclusão, memória viva e biblioteca de prompts ------------------------------------
+
+  const promptTemplates = useMemo(() => settings?.promptTemplates ?? [], [settings])
+
+  const updateAgent = useCallback(async (id: string, input: NewAgentInput) => {
+    const current = agents.find((agent) => agent.id === id)
+    if (!current) return false
+    const fields = { name: input.name, role: input.role, runtime: input.runtime, model: input.model, prompt: input.prompt }
+    if (serviceOnline) {
+      const { snapshot, error } = await api.updateAgent(id, { ...fields, parentId: input.parentId })
+      if (!snapshot) { toast.error(error ?? 'Não foi possível salvar o agente'); return false }
+      applySnapshot(snapshot)
+    } else {
+      const parentId = input.parentId || undefined
+      setAgents((list) => list.map((agent) => (agent.id === id ? { ...agent, ...fields, createdBy: parentId } : agent)))
+      if ((current.createdBy ?? '') !== (input.parentId ?? '')) {
+        setConnections((list) => [
+          ...list.filter((connection) => !(connection.target === id && connection.source === current.createdBy)),
+          ...(parentId ? [{ id: crypto.randomUUID(), source: parentId, target: id, label: 'delega' }] : []),
+        ])
+      }
+    }
+    toast.success(`${input.name} atualizado`)
+    return true
+  }, [agents, serviceOnline, applySnapshot, setAgents, setConnections])
+
+  const saveAgentMemory = useCallback(async (id: string, memory: string) => {
+    if (!serviceOnline) { toast.error('A memória viva fica no serviço local, que está offline'); return false }
+    const { snapshot, error } = await api.updateAgentMemory(id, { memory })
+    if (!snapshot) { toast.error(error ?? 'Não foi possível salvar a memória'); return false }
+    applySnapshot(snapshot)
+    toast.success('Memória viva atualizada')
+    return true
+  }, [serviceOnline, applySnapshot])
+
+  const clearAgentMemory = useCallback(async (id: string) => {
+    if (!serviceOnline) { toast.error('A memória viva fica no serviço local, que está offline'); return false }
+    const { snapshot, error } = await api.updateAgentMemory(id, { clear: true })
+    if (!snapshot) { toast.error(error ?? 'Não foi possível limpar a memória'); return false }
+    applySnapshot(snapshot)
+    // A conversa anterior também foi apagada no core: tira do terminal.
+    setTerminalLines((current) => ({ ...current, [id]: [] }))
+    toast.success('Memória viva limpa')
+    return true
+  }, [serviceOnline, applySnapshot])
+
+  const updateWorkItem = useCallback(async (id: string, input: WorkItemInput) => {
+    if (serviceOnline) {
+      const { snapshot, error } = await api.updateWorkItem(id, { ...input, assigneeId: input.assigneeId ?? '', goalId: input.goalId ?? '' })
+      if (!snapshot) { toast.error(error ?? 'Não foi possível salvar a tarefa'); return false }
+      applySnapshot(snapshot)
+    } else {
+      setWorkItems((list) => list.map((item) => (item.id === id ? { ...item, ...input } : item)))
+    }
+    toast.success('Tarefa atualizada')
+    return true
+  }, [serviceOnline, applySnapshot, setWorkItems])
+
+  const deleteWorkItem = useCallback(async (id: string) => {
+    if (serviceOnline) {
+      const { snapshot, error } = await api.deleteWorkItem(id)
+      if (!snapshot) { toast.error(error ?? 'Não foi possível excluir a tarefa'); return false }
+      applySnapshot(snapshot)
+    } else {
+      setWorkItems((list) => list.filter((item) => item.id !== id))
+    }
+    toast.success('Tarefa excluída')
+    return true
+  }, [serviceOnline, applySnapshot, setWorkItems])
+
+  const updateGoal = useCallback(async (id: string, input: { title: string; description: string }) => {
+    if (serviceOnline) {
+      const { snapshot, error } = await api.updateGoal(id, input)
+      if (!snapshot) { toast.error(error ?? 'Não foi possível salvar a meta'); return false }
+      applySnapshot(snapshot)
+    } else {
+      setGoals((list) => list.map((goal) => (goal.id === id ? { ...goal, ...input } : goal)))
+    }
+    toast.success('Meta atualizada')
+    return true
+  }, [serviceOnline, applySnapshot, setGoals])
+
+  const deleteGoal = useCallback(async (id: string) => {
+    if (serviceOnline) {
+      const { snapshot, error } = await api.deleteGoal(id)
+      if (!snapshot) { toast.error(error ?? 'Não foi possível excluir a meta'); return false }
+      applySnapshot(snapshot)
+    } else {
+      setGoals((list) => list.filter((goal) => goal.id !== id))
+      setWorkItems((list) => list.map((item) => (item.goalId === id ? { ...item, goalId: undefined } : item)))
+    }
+    toast.success('Meta excluída (as tarefas dela continuam no quadro)')
+    return true
+  }, [serviceOnline, applySnapshot, setGoals, setWorkItems])
+
+  const updateProject = useCallback(async (id: string, input: { name: string; path: string; description: string }) => {
+    if (serviceOnline) {
+      const { snapshot, error } = await api.updateProject(id, input)
+      if (!snapshot) { toast.error(error ?? 'Não foi possível salvar o projeto'); return false }
+      applySnapshot(snapshot)
+    } else {
+      setProjects((list) => list.map((project) => (project.id === id ? { ...project, ...input } : project)))
+    }
+    toast.success(`Projeto ${input.name} atualizado`)
+    return true
+  }, [serviceOnline, applySnapshot, setProjects])
+
+  const deleteProject = useCallback(async (id: string) => {
+    const target = projects.find((project) => project.id === id)
+    if (!target) return false
+    if (serviceOnline) {
+      const { snapshot, error } = await api.deleteProject(id)
+      if (!snapshot) { toast.error(error ?? 'Não foi possível excluir o projeto'); return false }
+      applySnapshot(snapshot)
+    } else {
+      setProjects((list) => {
+        const rest = list.filter((project) => project.id !== id)
+        if (target.active && rest.length && !rest.some((project) => project.active)) rest[0] = { ...rest[0], active: true }
+        return rest
+      })
+    }
+    toast.success(`Projeto ${target.name} removido do Vértice (a pasta no disco foi mantida)`)
+    return true
+  }, [projects, serviceOnline, applySnapshot, setProjects])
+
+  const savePromptTemplate = useCallback(async (name: string, prompt: string) => {
+    if (!serviceOnline) { toast.error('A biblioteca de prompts fica no serviço local, que está offline'); return false }
+    const trimmed = name.trim()
+    if (!trimmed || !prompt.trim()) return false
+    // Mesmo nome = atualiza o prompt salvo, em vez de duplicar.
+    const existing = promptTemplates.find((template) => template.name.toLowerCase() === trimmed.toLowerCase())
+    const next = existing
+      ? promptTemplates.map((template) => (template.id === existing.id ? { ...template, name: trimmed, prompt } : template))
+      : [...promptTemplates, { id: crypto.randomUUID(), name: trimmed, prompt }]
+    const { snapshot, error } = await api.updatePromptTemplates(next)
+    if (!snapshot) { toast.error(error ?? 'Não foi possível salvar o prompt'); return false }
+    applySnapshot(snapshot)
+    toast.success(existing ? `Prompt "${trimmed}" atualizado na biblioteca` : `Prompt "${trimmed}" salvo na biblioteca`)
+    return true
+  }, [serviceOnline, promptTemplates, applySnapshot])
+
+  const deletePromptTemplate = useCallback(async (id: string) => {
+    if (!serviceOnline) { toast.error('A biblioteca de prompts fica no serviço local, que está offline'); return false }
+    const { snapshot, error } = await api.updatePromptTemplates(promptTemplates.filter((template) => template.id !== id))
+    if (!snapshot) { toast.error(error ?? 'Não foi possível remover o prompt'); return false }
+    applySnapshot(snapshot)
+    toast.success('Prompt removido da biblioteca')
+    return true
+  }, [serviceOnline, promptTemplates, applySnapshot])
+
   const value: WorkspaceValue = {
     agents, connections, events, selectedId, modal, terminalOpen, terminalExpanded, terminalLines,
     showGrid, showMinimap, goals, workItems, projects, activeProject, cliRuntimes,
@@ -645,6 +857,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     settings, allowedWorkspaces, updatePolicies, dispatchWorkItem, completeWorkItem,
     serviceOnline, realRuntimes, liveSessions, refreshService,
     startAgentSession, stopAgentSession, installCliReal,
+    updateAgent, saveAgentMemory, clearAgentMemory,
+    updateWorkItem, deleteWorkItem, updateGoal, deleteGoal, updateProject, deleteProject,
+    promptTemplates, savePromptTemplate, deletePromptTemplate,
   }
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>

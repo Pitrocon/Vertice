@@ -35,9 +35,23 @@ export interface VerticePolicies {
   allowCredentials: boolean
 }
 
+export interface PromptTemplate {
+  id: string
+  name: string
+  prompt: string
+}
+
 export interface VerticeSettings {
   approvedRuntimes: string[]
   policies: VerticePolicies
+  /** Biblioteca de prompts salvos (sobrevive a "Limpar workspace"). */
+  promptTemplates?: PromptTemplate[]
+}
+
+/** Resultado de uma alteração: o snapshot novo ou a mensagem de erro do core (validação, 403...). */
+export interface MutationResult {
+  snapshot: WorkspaceSnapshot | null
+  error?: string
 }
 
 export interface AllowedWorkspace {
@@ -80,6 +94,22 @@ async function request<T>(method: 'POST' | 'PATCH' | 'DELETE', path: string, bod
   }
 }
 
+// Como `request`, mas devolve a mensagem de erro do core para a interface exibir o motivo da recusa.
+async function mutate(method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<MutationResult> {
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      method,
+      headers: authHeaders(body !== undefined ? { 'Content-Type': 'application/json' } : undefined),
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) return { snapshot: null, error: (data as { error?: string } | null)?.error ?? `Falha na operação (HTTP ${res.status}).` }
+    return { snapshot: data as WorkspaceSnapshot }
+  } catch {
+    return { snapshot: null, error: 'Serviço local indisponível.' }
+  }
+}
+
 export const api = {
   async health(): Promise<boolean> {
     const res = await get<{ ok: boolean }>('/api/health')
@@ -105,19 +135,16 @@ export const api = {
   },
 
   // Retorna a mensagem de erro do core (ex.: caminho de sistema recusado com 403) para a UI exibir.
-  async createProject(input: { id?: string; name: string; path: string; description: string }): Promise<{ snapshot: WorkspaceSnapshot | null; error?: string }> {
-    try {
-      const res = await fetch(`${BASE}/api/projects`, {
-        method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify(input),
-      })
-      const data = await res.json().catch(() => null)
-      if (!res.ok) return { snapshot: null, error: (data as { error?: string } | null)?.error ?? `Falha ao criar o projeto (HTTP ${res.status}).` }
-      return { snapshot: data as WorkspaceSnapshot }
-    } catch {
-      return { snapshot: null, error: 'Serviço local indisponível.' }
-    }
+  async createProject(input: { id?: string; name: string; path: string; description: string }): Promise<MutationResult> {
+    return mutate('POST', '/api/projects', input)
+  },
+
+  async updateProject(id: string, fields: { name?: string; path?: string; description?: string }): Promise<MutationResult> {
+    return mutate('PATCH', `/api/projects/${encodeURIComponent(id)}`, fields)
+  },
+
+  async deleteProject(id: string): Promise<MutationResult> {
+    return mutate('DELETE', `/api/projects/${encodeURIComponent(id)}`)
   },
 
   async activateProject(id: string): Promise<WorkspaceSnapshot | null> {
@@ -152,8 +179,17 @@ export const api = {
     return request<WorkspaceSnapshot>('PATCH', `/api/agents/${id}`, fields)
   },
 
-  async deleteAgent(id: string): Promise<WorkspaceSnapshot | null> {
-    return request<WorkspaceSnapshot>('DELETE', `/api/agents/${id}`)
+  async updateAgent(id: string, fields: { name?: string; role?: string; runtime?: string; model?: string; prompt?: string; parentId?: string }): Promise<MutationResult> {
+    return mutate('PATCH', `/api/agents/${encodeURIComponent(id)}`, fields)
+  },
+
+  async deleteAgent(id: string): Promise<MutationResult> {
+    return mutate('DELETE', `/api/agents/${encodeURIComponent(id)}`)
+  },
+
+  // Memória viva: { memory } substitui o texto acumulado; { clear: true } apaga memória e última conversa.
+  async updateAgentMemory(id: string, body: { memory: string } | { clear: true }): Promise<MutationResult> {
+    return mutate('POST', `/api/agents/${encodeURIComponent(id)}/memory`, body)
   },
 
   async createConnection(input: AgentConnection): Promise<WorkspaceSnapshot | null> {
@@ -170,6 +206,27 @@ export const api = {
 
   async patchWorkItem(id: string, fields: Partial<WorkItem>): Promise<WorkspaceSnapshot | null> {
     return request<WorkspaceSnapshot>('PATCH', `/api/work-items/${id}`, fields)
+  },
+
+  // `assigneeId`/`goalId` vazios removem o responsável/a meta.
+  async updateWorkItem(id: string, fields: { title?: string; status?: string; priority?: string; assigneeId?: string; goalId?: string }): Promise<MutationResult> {
+    return mutate('PATCH', `/api/work-items/${encodeURIComponent(id)}`, fields)
+  },
+
+  async deleteWorkItem(id: string): Promise<MutationResult> {
+    return mutate('DELETE', `/api/work-items/${encodeURIComponent(id)}`)
+  },
+
+  async updateGoal(id: string, fields: { title?: string; description?: string }): Promise<MutationResult> {
+    return mutate('PATCH', `/api/goals/${encodeURIComponent(id)}`, fields)
+  },
+
+  async deleteGoal(id: string): Promise<MutationResult> {
+    return mutate('DELETE', `/api/goals/${encodeURIComponent(id)}`)
+  },
+
+  async updatePromptTemplates(promptTemplates: PromptTemplate[]): Promise<MutationResult> {
+    return mutate('PATCH', '/api/settings', { promptTemplates })
   },
 
   async getSettings(): Promise<{ settings: VerticeSettings; allowedWorkspaces: AllowedWorkspace[] } | null> {

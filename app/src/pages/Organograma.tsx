@@ -172,7 +172,10 @@ function OrganogramaView() {
         onStopSession={() => selectedAgent && workspace.stopAgentSession(selectedAgent.id)}
         onOpenTerminal={() => setTerminalOpen(true)}
         onTogglePause={() => selectedAgent && togglePause(selectedAgent.id)}
+        onEdit={() => setModal('edit')}
         onRemove={() => setModal('remove')}
+        onSaveMemory={(memory) => (selectedAgent ? workspace.saveAgentMemory(selectedAgent.id, memory) : Promise.resolve(false))}
+        onClearMemory={() => (selectedAgent ? workspace.clearAgentMemory(selectedAgent.id) : Promise.resolve(false))}
         onSelect={(id) => setSelectedId(id)}
         onClose={() => setSelectedId(null)}
         mobileOpen={false}

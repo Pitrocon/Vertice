@@ -15,6 +15,10 @@ export interface Agent {
   x: number
   y: number
   createdBy?: string
+  /** Memória viva: uma linha por tarefa concluída (vem do core). */
+  memory?: string
+  /** Última conversa do terminal; só vem no carregamento inicial (GET /api/workspace). */
+  lastTranscript?: string
 }
 
 export interface AgentConnection {

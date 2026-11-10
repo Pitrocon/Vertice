@@ -5,7 +5,7 @@ import { Toaster } from 'sonner'
 import '@fontsource-variable/geist'
 import '@fontsource-variable/geist-mono'
 import { Brand } from '@/components/Brand'
-import { CreateAgentDialog, ManagerDialog, RemoveAgentDialog } from '@/components/AgentDialogs'
+import { CreateAgentDialog, EditAgentDialog, ManagerDialog, RemoveAgentDialog } from '@/components/AgentDialogs'
 import { CommandPalette } from '@/components/CommandPalette'
 import { Modal } from '@/components/Modal'
 import { WorkspaceProvider, useWorkspace } from '@/store/workspace'
@@ -26,7 +26,11 @@ const navItems = [
 function Shell() {
   const workspace = useWorkspace()
   const navigate = useNavigate()
-  const { agents, modal, selectedId, activeProject, setModal, setTerminalOpen, setShowGrid, setShowMinimap, createAgent, delegateToManager, removeAgent, resetDemo, clearWorkspace, showGrid, showMinimap } = workspace
+  const {
+    agents, workItems, modal, selectedId, activeProject, setModal, setTerminalOpen, setShowGrid, setShowMinimap,
+    createAgent, updateAgent, delegateToManager, removeAgent, resetDemo, clearWorkspace, showGrid, showMinimap,
+    promptTemplates, savePromptTemplate, deletePromptTemplate,
+  } = workspace
   const selectedAgent = selectedId ? agents.find((agent) => agent.id === selectedId) : undefined
 
   const goTerminal = () => {
@@ -99,7 +103,32 @@ function Shell() {
         <span>v0.2 / estrutura</span>
       </footer>
 
-      {modal === 'create' && <CreateAgentDialog agents={agents} serviceOnline={workspace.serviceOnline} scopePath={activeProject?.path} onClose={() => setModal(null)} onCreate={createAgent} />}
+      {modal === 'create' && (
+        <CreateAgentDialog
+          agents={agents}
+          serviceOnline={workspace.serviceOnline}
+          scopePath={activeProject?.path}
+          promptTemplates={promptTemplates}
+          onSavePrompt={savePromptTemplate}
+          onDeletePrompt={deletePromptTemplate}
+          onClose={() => setModal(null)}
+          onCreate={createAgent}
+        />
+      )}
+      {modal === 'edit' && selectedAgent && (
+        <EditAgentDialog
+          key={selectedAgent.id}
+          agent={selectedAgent}
+          agents={agents}
+          serviceOnline={workspace.serviceOnline}
+          scopePath={activeProject?.path}
+          promptTemplates={promptTemplates}
+          onSavePrompt={savePromptTemplate}
+          onDeletePrompt={deletePromptTemplate}
+          onClose={() => setModal(null)}
+          onSave={(input) => updateAgent(selectedAgent.id, input)}
+        />
+      )}
       {modal === 'manager' && <ManagerDialog serviceOnline={workspace.serviceOnline} onClose={() => setModal(null)} onDelegate={delegateToManager} />}
       {modal === 'commands' && (
         <CommandPalette
@@ -121,7 +150,15 @@ function Shell() {
           <footer className="modal-footer"><button className="button button--secondary" onClick={() => setModal(null)}>Cancelar</button><button className="button button--danger-solid" onClick={() => void clearWorkspace()}><Trash2 size={15} /> Limpar workspace</button></footer>
         </Modal>
       )}
-      {modal === 'remove' && selectedAgent && <RemoveAgentDialog agent={selectedAgent} onClose={() => setModal(null)} onConfirm={() => removeAgent(selectedAgent.id)} />}
+      {modal === 'remove' && selectedAgent && (
+        <RemoveAgentDialog
+          agent={selectedAgent}
+          subordinates={agents.filter((agent) => agent.createdBy === selectedAgent.id).length}
+          tasks={workItems.filter((item) => item.assigneeId === selectedAgent.id).length}
+          onClose={() => setModal(null)}
+          onConfirm={() => void removeAgent(selectedAgent.id)}
+        />
+      )}
       {modal === 'settings' && (
         <Modal title="Preferências do organograma" eyebrow="VISUALIZAÇÃO" onClose={() => setModal(null)}>
           <div className="settings-list">
