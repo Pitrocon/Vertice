@@ -31,6 +31,7 @@ const API_TOKEN = randomBytes(32).toString('hex')
 process.env.VERTICE_API_TOKEN = API_TOKEN
 
 let mainWindow = null
+let coreModule = null
 
 async function startCoreService() {
   if (!existsSync(CORE_ENTRY)) {
@@ -39,6 +40,7 @@ async function startCoreService() {
   // Import dinâmico: o core usa node:sqlite e node-pty, que exigem o runtime do Electron.
   // pathToFileURL garante um import() válido a partir de caminho absoluto no Windows.
   const core = await import(pathToFileURL(CORE_ENTRY).href)
+  coreModule = core
   await core.startCore()
 }
 
@@ -91,6 +93,11 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+// Antes de sair, o core grava a conversa pendente de cada agente (memória viva).
+app.on('before-quit', () => {
+  try { coreModule?.shutdownCore?.() } catch (error) { console.error('[vertice] falha ao gravar a memória ao sair:', error) }
 })
 
 app.on('window-all-closed', () => {

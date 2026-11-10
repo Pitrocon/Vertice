@@ -96,7 +96,7 @@ db.exec(`
 // ---------------------------------------------------------------------------
 // Migracoes idempotentes baseadas em meta.schema_version. Nunca apagam dados.
 // ---------------------------------------------------------------------------
-const SCHEMA_VERSION = 3
+const SCHEMA_VERSION = 4
 
 function getSchemaVersion() {
   const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()
@@ -163,6 +163,13 @@ function runMigrations() {
       if (!columnExists('work_items', name)) {
         db.exec(`ALTER TABLE work_items ADD COLUMN ${name} ${type}`)
       }
+    }
+  }
+
+  // v4 (E14) -> memória viva dos agentes: resumo acumulado e última conversa do terminal.
+  if (current < 4) {
+    for (const [name, type] of [['memory', 'TEXT'], ['last_transcript', 'TEXT']]) {
+      if (!columnExists('agents', name)) db.exec(`ALTER TABLE agents ADD COLUMN ${name} ${type}`)
     }
   }
 
@@ -282,8 +289,16 @@ export function loadDemoData() {
   setWorkspaceMode('demo')
 }
 
+// Processos PTY não sobrevivem ao fechamento do programa. Se ele foi fechado com agentes trabalhando,
+// o banco ainda os mostraria como "working" e sessões como "running", sem nenhum processo por trás.
+function recoverFromUnexpectedShutdown() {
+  db.prepare("UPDATE agents SET status = 'idle', task = '' WHERE status = 'working'").run()
+  db.prepare("UPDATE sessions SET status = 'ended', ended_at = ? WHERE status = 'running'").run(new Date().toISOString())
+}
+
 // Boot: NÃO repovoa dados de demonstração. Só garante as configurações das CLIs.
 runMigrations()
+recoverFromUnexpectedShutdown()
 seedSettings()
 if (getWorkspaceMode() === null) {
   // Banco criado por versão anterior: classifica pelo conteúdo, sem alterar nenhum dado.
@@ -296,13 +311,17 @@ function mapProject(row) {
   return { id: row.id, name: row.name, path: row.path, description: row.description, active: Boolean(row.active) }
 }
 
-function mapAgent(row) {
+// `transcript`: inclui a última conversa do terminal (até ~15 mil caracteres por agente). Só vai no
+// GET /api/workspace; os broadcasts de snapshot a omitem para não reenviar centenas de KB a cada mutação.
+function mapAgent(row, { transcript = false } = {}) {
   return {
     id: row.id, name: row.name, role: row.role, kind: row.kind,
     runtime: row.runtime, model: row.model, status: row.status,
     task: row.task, progress: Number(row.progress), prompt: row.prompt,
     x: Number(row.x), y: Number(row.y),
     ...(row.created_by ? { createdBy: row.created_by } : {}),
+    ...(row.memory ? { memory: row.memory } : {}),
+    ...(transcript && row.last_transcript ? { lastTranscript: row.last_transcript } : {}),
   }
 }
 
@@ -381,10 +400,10 @@ export function removeAllowedWorkspace(id) {
   db.prepare('DELETE FROM allowed_workspaces WHERE id = ?').run(id)
 }
 
-export function getWorkspaceSnapshot() {
+export function getWorkspaceSnapshot({ transcripts = false } = {}) {
   return {
     projects: db.prepare('SELECT * FROM projects').all().map(mapProject),
-    agents: db.prepare('SELECT * FROM agents').all().map(mapAgent),
+    agents: db.prepare('SELECT * FROM agents').all().map((row) => mapAgent(row, { transcript: transcripts })),
     connections: db.prepare('SELECT * FROM connections').all().map(mapConnection),
     goals: db.prepare('SELECT * FROM goals').all().map(mapGoal),
     workItems: db.prepare('SELECT * FROM work_items').all().map(mapWorkItem),
@@ -454,10 +473,117 @@ export function patchAgent(id, fields) {
 
 export function deleteAgent(id) {
   const current = db.prepare('SELECT * FROM agents WHERE id = ?').get(id)
-  if (!current || current.kind === 'manager') return false
+  if (!current) return false
   db.prepare('DELETE FROM connections WHERE source = ? OR target = ?').run(id, id)
+  // Quem era subordinado fica sem supervisor; tarefas do agente ficam sem responsável (não somem).
+  db.prepare('UPDATE agents SET created_by = NULL WHERE created_by = ?').run(id)
+  db.prepare('UPDATE work_items SET assignee_id = NULL WHERE assignee_id = ?').run(id)
   db.prepare('DELETE FROM agents WHERE id = ?').run(id)
   return true
+}
+
+// --- E14: memória viva, edição e exclusão ---------------------------------------------------------
+
+const MAX_MEMORY_CHARS = 8000
+
+export function getAgent(id, { transcript = true } = {}) {
+  const row = db.prepare('SELECT * FROM agents WHERE id = ?').get(id)
+  return row ? mapAgent(row, { transcript }) : null
+}
+
+export function getAgentTranscript(id) {
+  const row = db.prepare('SELECT last_transcript FROM agents WHERE id = ?').get(id)
+  return row ? (row.last_transcript ?? '') : null
+}
+
+export function setAgentTranscript(id, text) {
+  db.prepare('UPDATE agents SET last_transcript = ? WHERE id = ?').run(text ?? '', id)
+}
+
+export function setAgentMemory(id, text) {
+  const value = String(text ?? '').slice(-MAX_MEMORY_CHARS)
+  return db.prepare('UPDATE agents SET memory = ? WHERE id = ?').run(value, id).changes > 0
+}
+
+export function appendAgentMemory(id, entry) {
+  const row = db.prepare('SELECT memory FROM agents WHERE id = ?').get(id)
+  if (!row) return false
+  const next = ((row.memory ? row.memory + '\n' : '') + entry).slice(-MAX_MEMORY_CHARS)
+  db.prepare('UPDATE agents SET memory = ? WHERE id = ?').run(next, id)
+  return true
+}
+
+export function clearAgentMemory(id) {
+  return db.prepare("UPDATE agents SET memory = '', last_transcript = '' WHERE id = ?").run(id).changes > 0
+}
+
+// Trocar o supervisor sem criar ciclo no organograma (um agente nunca pode ficar abaixo de si mesmo).
+export function wouldCreateCycle(agentId, parentId) {
+  let cursor = parentId
+  for (let steps = 0; cursor && steps < 100; steps += 1) {
+    if (cursor === agentId) return true
+    cursor = db.prepare('SELECT created_by FROM agents WHERE id = ?').get(cursor)?.created_by
+  }
+  return false
+}
+
+export function setAgentParent(agentId, parentId, connectionId) {
+  const current = db.prepare('SELECT created_by FROM agents WHERE id = ?').get(agentId)
+  if (!current) return false
+  if (current.created_by) {
+    db.prepare('DELETE FROM connections WHERE source = ? AND target = ?').run(current.created_by, agentId)
+  }
+  db.prepare('UPDATE agents SET created_by = ? WHERE id = ?').run(parentId || null, agentId)
+  if (parentId) {
+    db.prepare('INSERT OR REPLACE INTO connections (id, source, target, label, active) VALUES (?, ?, ?, ?, 0)')
+      .run(connectionId, parentId, agentId, 'delega')
+  }
+  return true
+}
+
+export function deleteWorkItem(id) {
+  db.prepare('UPDATE work_items SET parent_task_id = NULL WHERE parent_task_id = ?').run(id)
+  return db.prepare('DELETE FROM work_items WHERE id = ?').run(id).changes > 0
+}
+
+export function patchGoal(id, { title, description }) {
+  const current = db.prepare('SELECT * FROM goals WHERE id = ?').get(id)
+  if (!current) return false
+  db.prepare('UPDATE goals SET title = ?, description = ? WHERE id = ?')
+    .run(title ?? current.title, description ?? current.description, id)
+  return true
+}
+
+// Excluir uma meta não apaga as tarefas dela: elas só deixam de ter meta.
+export function deleteGoal(id) {
+  db.prepare('UPDATE work_items SET goal_id = NULL WHERE goal_id = ?').run(id)
+  return db.prepare('DELETE FROM goals WHERE id = ?').run(id).changes > 0
+}
+
+export function patchProject(id, { name, path, description }) {
+  const current = db.prepare('SELECT * FROM projects WHERE id = ?').get(id)
+  if (!current) return false
+  db.prepare('UPDATE projects SET name = ?, path = ?, description = ? WHERE id = ?')
+    .run(name ?? current.name, path ?? current.path, description ?? current.description, id)
+  return true
+}
+
+// Remove o projeto (os ARQUIVOS no disco não são tocados). Se era o ativo e sobrou outro, ativa o primeiro.
+export function deleteProject(id) {
+  const current = db.prepare('SELECT * FROM projects WHERE id = ?').get(id)
+  if (!current) return false
+  db.prepare('DELETE FROM projects WHERE id = ?').run(id)
+  if (current.active) {
+    const next = db.prepare('SELECT id FROM projects ORDER BY rowid LIMIT 1').get()
+    if (next) db.prepare('UPDATE projects SET active = CASE WHEN id = ? THEN 1 ELSE 0 END').run(next.id)
+  }
+  return true
+}
+
+// Libera o workspace permitido que ESTE projeto criou (ws-<id>). Entradas criadas pela TI na aba CLI's
+// ou usadas por outro projeto não são tocadas.
+export function releaseProjectWorkspace(projectId) {
+  db.prepare('DELETE FROM allowed_workspaces WHERE id = ?').run(`ws-${projectId}`)
 }
 
 export function createConnection({ id, source, target, label, active }) {

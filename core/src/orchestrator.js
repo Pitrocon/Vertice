@@ -7,7 +7,11 @@ import { assertAllowedCwd, WorkspaceError } from './workspace.js'
 import {
   getWorkspaceSnapshot, patchWorkItem, patchAgent, recordEvent,
   getSetting, listAllowedWorkspaces,
+  getAgent, getAgentTranscript, setAgentTranscript, appendAgentMemory,
 } from './db.js'
+import {
+  createTranscriptRecorder, hasPriorContext, buildResumeNote, buildMemoryMarkdown, writeMemoryFile, formatMemoryEntry,
+} from './agent-memory.js'
 
 // Mapeia o "runtime" humano do agente (ex.: "Claude Code") para o id do catalogo.
 const RUNTIME_NAME_TO_ID = {
@@ -31,8 +35,70 @@ export function configureOrchestrator({ broadcast }) {
   if (typeof broadcast === 'function') broadcastFn = broadcast
 }
 
-export function registerAgentSession(agentId, sessionId) {
-  if (agentId && sessionId) agentSessions.set(agentId, sessionId)
+// Transcrição limpa de cada agente (E14): salva no SQLite com debounce e espelhada em arquivo.
+const transcripts = createTranscriptRecorder({
+  load: (agentId) => getAgentTranscript(agentId),
+  save: (agentId, text) => {
+    setAgentTranscript(agentId, text)
+    syncMemoryFile(agentId)
+  },
+})
+
+/** Reescreve <projeto ativo>/.vertice/memory/<agente>.md a partir do banco. Nunca lança erro. */
+export function syncMemoryFile(agentId) {
+  try {
+    const agent = getAgent(agentId)
+    if (!agent) return null
+    const projectPath = activeProjectPath(getWorkspaceSnapshot())
+    if (!projectPath) return null
+    // O arquivo só é gravado dentro de um workspace permitido (mesma regra de confinamento das sessões).
+    const safeDir = assertAllowedCwd(projectPath, listAllowedWorkspaces())
+    return writeMemoryFile(safeDir, agentId, buildMemoryMarkdown({ agent, memory: agent.memory, transcript: agent.lastTranscript }))
+  } catch (error) {
+    console.error('[memoria] não foi possível gravar o arquivo de memória:', error.message)
+    return null
+  }
+}
+
+export function flushTranscripts() { transcripts.flushAll() }
+export function forgetAgentTranscript(agentId) { transcripts.forget(agentId) }
+export function forgetAllTranscripts() { transcripts.forgetAll() }
+
+function recordTranscript(event) {
+  if (!event?.agentId) return
+  if (event.type === 'output') transcripts.append(event.agentId, event.data)
+  else if (event.type === 'exit') transcripts.flush(event.agentId)
+}
+
+// Sessão retomada: espera a CLI subir e a orienta (em UMA linha) a ler a memória viva do agente.
+async function injectResumeContext(agentId, sessionId) {
+  try {
+    await waitForSessionReady(sessionId)
+    if (!listActiveSessions().some((s) => s.id === sessionId)) return
+    syncMemoryFile(agentId) // o arquivo precisa existir ANTES de a IA ser mandada lê-lo
+    if (!writeToSession(sessionId, buildResumeNote(agentId))) return
+    await delay(200)
+    writeToSession(sessionId, '\r')
+    recordEvent(agentId, 'Memória viva enviada à sessão retomada', 'system')
+  } catch (error) {
+    console.error('[memoria] falha ao enviar o contexto de retomada:', error.message)
+  }
+}
+
+/**
+ * Registra a sessão do agente. Retorna `true` se ele já tinha memória/conversa de antes (avaliado ANTES de
+ * marcar o início da nova sessão, que altera a transcrição). Com `resume`, a IA é orientada a ler a memória
+ * viva assim que a CLI terminar de subir; o despacho de tarefa usa `resume: false` e leva a nota na instrução.
+ */
+export function registerAgentSession(agentId, sessionId, { runtimeId, resume = true } = {}) {
+  if (!agentId || !sessionId) return false
+  agentSessions.set(agentId, sessionId)
+  const agent = getAgent(agentId)
+  const hadContext = agent ? hasPriorContext({ memory: agent.memory, transcript: agent.lastTranscript }) : false
+  transcripts.markSessionStart(agentId)
+  // O PowerShell digitaria a nota como COMANDO: a retomada só vale para CLIs de IA.
+  if (resume && hadContext && runtimeId !== 'powershell') void injectResumeContext(agentId, sessionId)
+  return hadContext
 }
 
 export { trackedBroadcast }
@@ -63,6 +129,7 @@ function trackedBroadcast(event) {
   else if (event?.type === 'exit' && event.sessionId) sessionActivity.delete(event.sessionId)
   broadcastFn(event)
   feedTaskMonitor(event)
+  recordTranscript(event)
 }
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -112,9 +179,9 @@ async function ensureAgentSession(agent, snapshot) {
     cwd: safeCwd,
     onEvent: trackedBroadcast,
   })
-  agentSessions.set(agent.id, session.id)
+  const hadContext = registerAgentSession(agent.id, session.id, { runtimeId, resume: false })
   broadcastFn({ type: 'session-started', ...session })
-  return { sessionId: session.id, created: true }
+  return { sessionId: session.id, created: true, hadContext }
 }
 
 // --- Conclusão automática (E13 / B3) ------------------------------------------
@@ -181,13 +248,16 @@ export async function dispatchWorkItem(workItemId) {
   const agent = snapshot.agents.find((a) => a.id === item.assigneeId)
   if (!agent) throw new Error('Agente responsável não encontrado.')
 
-  const { sessionId, created } = await ensureAgentSession(agent, snapshot)
+  const { sessionId, created, hadContext } = await ensureAgentSession(agent, snapshot)
 
   // Instrução em UMA linha: num terminal interativo cada quebra de linha viraria um Enter e enviaria
   // o prompt picado, em várias submissões.
   const runtimeId = runtimeIdForAgent(agent)
   // O PowerShell digita a instrução como COMANDO: o pedido do marcador só vale para CLIs de IA.
-  const instruction = [agent.prompt, `Tarefa: ${item.title}`, runtimeId === 'powershell' ? '' : COMPLETION_INSTRUCTION]
+  // Sessão nova de um agente que já tinha histórico: a IA é orientada a ler a memória viva no primeiro turno.
+  const resumeNote = created && hadContext && runtimeId !== 'powershell' ? buildResumeNote(agent.id) : ''
+  if (resumeNote) syncMemoryFile(agent.id)
+  const instruction = [resumeNote, agent.prompt, `Tarefa: ${item.title}`, runtimeId === 'powershell' ? '' : COMPLETION_INSTRUCTION]
     .filter(Boolean)
     .join(' ')
     .replace(/\s*[\r\n]+\s*/g, ' ')
@@ -236,6 +306,8 @@ export async function completeWorkItem(workItemId, { result, error, auto = false
   const snap = getWorkspaceSnapshot()
   const item = snap.workItems.find((w) => w.id === workItemId)
   if (item?.assigneeId) {
+    // E14: a tarefa entra na memória viva do agente (SQLite + arquivo .vertice/memory/<agente>.md).
+    if (appendAgentMemory(item.assigneeId, formatMemoryEntry({ title: item.title, result, error }))) syncMemoryFile(item.assigneeId)
     const stillBusy = snap.workItems.some((w) => w.assigneeId === item.assigneeId && w.status === 'doing')
     if (!stillBusy) patchAgent(item.assigneeId, { status: 'idle', task: '' })
   }
@@ -244,5 +316,16 @@ export async function completeWorkItem(workItemId, { result, error, auto = false
   // `auto` avisa o frontend que foi a IA (e não o usuário) quem concluiu: ele mostra um aviso.
   broadcastFn({ type: 'task-updated', workItemId, snapshot, ...(auto ? { auto: true, reason } : {}) })
   return { ok: true, status }
+}
+
+/** Tarefa excluída: para de observá-la e, se estava em andamento, libera o agente (se não houver outra). */
+export function onWorkItemRemoved(item) {
+  if (!item) return
+  cancelTaskMonitorsFor(item.id)
+  if (item.assigneeId && item.status === 'doing') {
+    const snap = getWorkspaceSnapshot()
+    const busy = snap.workItems.some((w) => w.assigneeId === item.assigneeId && w.status === 'doing')
+    if (!busy && snap.agents.some((a) => a.id === item.assigneeId)) patchAgent(item.assigneeId, { status: 'idle', task: '' })
+  }
 }
 

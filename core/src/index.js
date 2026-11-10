@@ -10,12 +10,17 @@ import { detectRuntimes, resolveCommand, RUNTIME_CATALOG } from './runtimes.js'
 import { startSession, writeToSession, resizeSession, killSession, listActiveSessions } from './sessions.js'
 import { assertAllowedCwd, assertSafeProjectPath, expandEnvVars, WorkspaceError } from './workspace.js'
 import { checkRequestOrigin, isFileOrigin, isLocalHost, isLocalOrigin, tokenFromRequest } from './security.js'
-import { configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName, registerAgentSession, trackedBroadcast } from './orchestrator.js'
+import {
+  configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName, registerAgentSession, trackedBroadcast,
+  syncMemoryFile, flushTranscripts, forgetAgentTranscript, forgetAllTranscripts, onWorkItemRemoved,
+} from './orchestrator.js'
 import {
   listSessions, listEvents, recordEvent,
   getWorkspaceSnapshot, loadDemoData, clearWorkspaceData,
   createProject, activateProject, getProject, allowProjectWorkspace,
   upsertAgent, patchAgent, deleteAgent,
+  getAgent, setAgentMemory, clearAgentMemory, wouldCreateCycle, setAgentParent,
+  deleteWorkItem, patchGoal, deleteGoal, patchProject, deleteProject, releaseProjectWorkspace,
   createConnection, createGoal, createWorkItem, patchWorkItem,
   getSettings, getSetting, setSetting,
   listAllowedWorkspaces, addAllowedWorkspace, removeAllowedWorkspace,
@@ -96,9 +101,17 @@ app.post('/api/runtimes/:id/install', async (req, res) => {
   res.json({ runtime: detected, snapshot: broadcastSnapshot() })
 })
 
+// Só o carregamento inicial traz a última conversa de cada agente (até ~15 mil caracteres cada);
+// os broadcasts de snapshot a omitem para não reenviá-la a cada mutação.
 app.get('/api/workspace', (_req, res) => {
-  res.json(getWorkspaceSnapshot())
+  res.json(getWorkspaceSnapshot({ transcripts: true }))
 })
+
+// Valores aceitos pela API (evita gravar status/prioridade inválidos que a interface não sabe exibir).
+const AGENT_STATUSES = ['idle', 'working', 'paused', 'queued']
+const WORK_STATUSES = ['todo', 'doing', 'review', 'done', 'failed']
+const PRIORITIES = ['alta', 'media', 'baixa']
+const isFilledText = (value) => typeof value === 'string' && value.trim() !== ''
 
 // Encerra todas as sessões vivas (usado ao trocar/limpar o workspace: os agentes deixam de existir).
 function endAllSessions() {
@@ -110,6 +123,7 @@ function endAllSessions() {
 // Carrega os dados de DEMONSTRAÇÃO (equipe e projetos de exemplo). Preserva aprovação de CLIs/políticas.
 app.post('/api/workspace/reset', (_req, res) => {
   endAllSessions()
+  forgetAllTranscripts()
   loadDemoData()
   recordEvent(null, 'Dados de demonstração carregados', 'system')
   res.json(broadcastSnapshot())
@@ -119,6 +133,7 @@ app.post('/api/workspace/reset', (_req, res) => {
 // Mantém apenas as configurações das CLIs (settings).
 app.post('/api/workspace/clear', (_req, res) => {
   endAllSessions()
+  forgetAllTranscripts()
   clearWorkspaceData()
   res.json(broadcastSnapshot())
 })
@@ -130,7 +145,7 @@ app.get('/api/settings', (_req, res) => {
 })
 
 app.patch('/api/settings', (req, res) => {
-  const { approvedRuntimes, policies } = req.body ?? {}
+  const { approvedRuntimes, policies, promptTemplates } = req.body ?? {}
   if (approvedRuntimes !== undefined) {
     if (!Array.isArray(approvedRuntimes)) return res.status(400).json({ error: 'approvedRuntimes deve ser uma lista' })
     setSetting('approvedRuntimes', approvedRuntimes)
@@ -139,7 +154,25 @@ app.patch('/api/settings', (req, res) => {
     if (typeof policies !== 'object' || policies === null) return res.status(400).json({ error: 'policies deve ser um objeto' })
     setSetting('policies', policies)
   }
-  recordEvent('gerente', 'Políticas/aprovações atualizadas', 'system')
+  // Biblioteca de prompts salvos: fica em `settings`, então sobrevive a "Limpar workspace".
+  if (promptTemplates !== undefined) {
+    if (!Array.isArray(promptTemplates) || promptTemplates.length > 100) {
+      return res.status(400).json({ error: 'promptTemplates deve ser uma lista com até 100 itens' })
+    }
+    const cleaned = []
+    for (const template of promptTemplates) {
+      if (!template || !isFilledText(template.name) || !isFilledText(template.prompt)) {
+        return res.status(400).json({ error: 'Cada prompt salvo precisa de nome e texto' })
+      }
+      cleaned.push({
+        id: typeof template.id === 'string' && template.id ? template.id : randomUUID(),
+        name: template.name.trim().slice(0, 80),
+        prompt: template.prompt.slice(0, 8000),
+      })
+    }
+    setSetting('promptTemplates', cleaned)
+  }
+  recordEvent(null, promptTemplates !== undefined && approvedRuntimes === undefined && policies === undefined ? 'Biblioteca de prompts atualizada' : 'Políticas/aprovações atualizadas', 'system')
   res.json(broadcastSnapshot())
 })
 
@@ -190,14 +223,61 @@ app.post('/api/projects/:id/activate', (req, res) => {
   res.json(broadcastSnapshot())
 })
 
+// Editar projeto: nome, descrição e/ou pasta. A nova pasta passa pela mesma validação de segurança da criação.
+app.patch('/api/projects/:id', (req, res) => {
+  const project = getProject(req.params.id)
+  if (!project) return res.status(404).json({ error: 'Projeto não encontrado' })
+  const { name, path, description } = req.body ?? {}
+  const fields = {}
+  if (name !== undefined) {
+    if (!isFilledText(name)) return res.status(400).json({ error: 'O nome do projeto não pode ficar vazio' })
+    fields.name = name.trim()
+  }
+  if (description !== undefined) {
+    if (typeof description !== 'string') return res.status(400).json({ error: 'description deve ser texto' })
+    fields.description = description
+  }
+  if (path !== undefined) {
+    try {
+      fields.path = assertSafeProjectPath(expandEnvVars(String(path).trim()))
+    } catch (error) {
+      if (error instanceof WorkspaceError) return res.status(403).json({ error: error.message })
+      return res.status(500).json({ error: `Falha ao validar o caminho: ${error.message}` })
+    }
+  }
+  patchProject(project.id, fields)
+  if (fields.path && fields.path.toLowerCase() !== project.path.toLowerCase()) {
+    releaseProjectWorkspace(project.id)
+    allowProjectWorkspace({ id: project.id, path: fields.path })
+  }
+  recordEvent(null, `Projeto ${fields.name ?? project.name} atualizado`, 'system')
+  res.json(broadcastSnapshot())
+})
+
+// Excluir projeto: só tira do Vértice. Os ARQUIVOS da pasta no disco não são tocados.
+app.delete('/api/projects/:id', (req, res) => {
+  const project = getProject(req.params.id)
+  if (!project) return res.status(404).json({ error: 'Projeto não encontrado' })
+  deleteProject(project.id)
+  releaseProjectWorkspace(project.id)
+  recordEvent(null, `Projeto ${project.name} excluído (a pasta no disco foi mantida)`, 'system')
+  res.json(broadcastSnapshot())
+})
+
 app.post('/api/agents', (req, res) => {
   const agent = req.body ?? {}
   if (!agent.id || !agent.name || !agent.runtime) {
     return res.status(400).json({ error: 'id, name e runtime são obrigatórios' })
   }
-  upsertAgent(agent)
-  if (agent.parentId) {
-    createConnection({ id: randomUUID(), source: agent.parentId, target: agent.id, label: 'delega', active: false })
+  // O supervisor vive em dois lugares: `createdBy` (usado para trocar supervisor e detectar ciclos) e a
+  // conexão do organograma. Aceita `parentId` ou `createdBy` e grava os dois de forma consistente.
+  const parentId = agent.parentId || agent.createdBy || ''
+  if (parentId && (parentId === agent.id || !getAgent(parentId, { transcript: false }))) {
+    return res.status(400).json({ error: 'Supervisor inválido' })
+  }
+  upsertAgent({ ...agent, createdBy: parentId || null })
+  if (parentId) {
+    createConnection({ id: randomUUID(), source: parentId, target: agent.id, label: 'delega', active: false })
   }
   recordEvent(agent.parentId ?? agent.id, `${agent.name} adicionado e persistido no SQLite`, 'create')
   res.json(broadcastSnapshot())
@@ -222,16 +302,75 @@ app.post('/api/agents/batch', (req, res) => {
   res.json(broadcastSnapshot())
 })
 
+// Editar agente (nome, função, runtime, modelo, instrução, supervisor) e também posição/estado.
+// Campos fora da lista são ignorados (ex.: `id` e `kind` não mudam por aqui).
 app.patch('/api/agents/:id', (req, res) => {
-  const ok = patchAgent(req.params.id, req.body ?? {})
-  if (!ok) return res.status(404).json({ error: 'Agente não encontrado' })
+  const id = req.params.id
+  const current = getAgent(id, { transcript: false })
+  if (!current) return res.status(404).json({ error: 'Agente não encontrado' })
+  const body = req.body ?? {}
+  const fields = {}
+  for (const key of ['name', 'role', 'runtime', 'model', 'prompt', 'task']) {
+    if (body[key] === undefined) continue
+    if (typeof body[key] !== 'string') return res.status(400).json({ error: `${key} deve ser texto` })
+    fields[key] = body[key]
+  }
+  for (const key of ['name', 'role', 'runtime', 'model']) {
+    if (key in fields && !fields[key].trim()) return res.status(400).json({ error: `${key} não pode ficar vazio` })
+  }
+  if (fields.runtime !== undefined && !runtimeIdFromName(fields.runtime)) {
+    return res.status(400).json({ error: `Runtime "${fields.runtime}" não existe no catálogo` })
+  }
+  if (body.status !== undefined) {
+    if (!AGENT_STATUSES.includes(body.status)) return res.status(400).json({ error: 'status inválido' })
+    fields.status = body.status
+  }
+  for (const key of ['x', 'y', 'progress']) {
+    if (body[key] === undefined) continue
+    if (!Number.isFinite(body[key])) return res.status(400).json({ error: `${key} deve ser um número` })
+    fields[key] = body[key]
+  }
+  if (body.parentId !== undefined) {
+    const parentId = body.parentId || ''
+    if (parentId) {
+      if (parentId === id || !getAgent(parentId, { transcript: false })) return res.status(400).json({ error: 'Supervisor inválido' })
+      if (wouldCreateCycle(id, parentId)) return res.status(400).json({ error: 'Esse supervisor criaria um ciclo no organograma' })
+    }
+    if ((current.createdBy ?? '') !== parentId) setAgentParent(id, parentId, randomUUID())
+  }
+  patchAgent(id, fields)
   res.json(broadcastSnapshot())
 })
 
+// Excluir agente (inclusive o gerente): encerra as sessões dele; subordinados ficam sem supervisor e as
+// tarefas dele ficam sem responsável (não são apagadas).
 app.delete('/api/agents/:id', (req, res) => {
-  const ok = deleteAgent(req.params.id)
-  if (!ok) return res.status(404).json({ error: 'Agente não encontrado ou não pode ser removido' })
-  recordEvent('gerente', `Agente ${req.params.id} removido da equipe`, 'system')
+  const current = getAgent(req.params.id, { transcript: false })
+  if (!current) return res.status(404).json({ error: 'Agente não encontrado' })
+  for (const session of listActiveSessions()) {
+    if (session.agentId === current.id && killSession(session.id)) broadcast({ type: 'session-ended', sessionId: session.id })
+  }
+  forgetAgentTranscript(current.id)
+  deleteAgent(current.id)
+  recordEvent(null, `Agente ${current.name} removido da equipe`, 'system')
+  res.json(broadcastSnapshot())
+})
+
+// Memória viva: editar o texto acumulado ({ memory }) ou limpar memória + última conversa ({ clear: true }).
+app.post('/api/agents/:id/memory', (req, res) => {
+  const agent = getAgent(req.params.id, { transcript: false })
+  if (!agent) return res.status(404).json({ error: 'Agente não encontrado' })
+  const { memory, clear } = req.body ?? {}
+  if (clear === true) {
+    forgetAgentTranscript(agent.id) // antes de limpar: um flush pendente regravaria o texto antigo
+    clearAgentMemory(agent.id)
+  } else if (typeof memory === 'string') {
+    setAgentMemory(agent.id, memory)
+  } else {
+    return res.status(400).json({ error: 'Informe { memory: "texto" } ou { clear: true }' })
+  }
+  syncMemoryFile(agent.id)
+  recordEvent(agent.id, clear === true ? 'Memória viva limpa' : 'Memória viva editada', 'system')
   res.json(broadcastSnapshot())
 })
 
@@ -251,6 +390,22 @@ app.post('/api/goals', (req, res) => {
   res.json(broadcastSnapshot())
 })
 
+app.patch('/api/goals/:id', (req, res) => {
+  const { title, description } = req.body ?? {}
+  if (title !== undefined && !isFilledText(title)) return res.status(400).json({ error: 'O título da meta não pode ficar vazio' })
+  if (description !== undefined && typeof description !== 'string') return res.status(400).json({ error: 'description deve ser texto' })
+  const ok = patchGoal(req.params.id, { title: title?.trim(), description })
+  if (!ok) return res.status(404).json({ error: 'Meta não encontrada' })
+  res.json(broadcastSnapshot())
+})
+
+// Excluir meta: as tarefas dela continuam existindo, só ficam sem meta.
+app.delete('/api/goals/:id', (req, res) => {
+  const ok = deleteGoal(req.params.id)
+  if (!ok) return res.status(404).json({ error: 'Meta não encontrada' })
+  res.json(broadcastSnapshot())
+})
+
 app.post('/api/work-items', (req, res) => {
   const { id, title, status, assigneeId, goalId, priority } = req.body ?? {}
   if (!title) return res.status(400).json({ error: 'title é obrigatório' })
@@ -259,9 +414,42 @@ app.post('/api/work-items', (req, res) => {
   res.json(broadcastSnapshot())
 })
 
+// Editar tarefa. `assigneeId`/`goalId` vazios removem o responsável/a meta. O resultado só é gravado
+// pelas rotas de conclusão, nunca por aqui.
 app.patch('/api/work-items/:id', (req, res) => {
-  const ok = patchWorkItem(req.params.id, req.body ?? {})
+  const body = req.body ?? {}
+  const fields = {}
+  if (body.title !== undefined) {
+    if (!isFilledText(body.title)) return res.status(400).json({ error: 'O título da tarefa não pode ficar vazio' })
+    fields.title = body.title.trim()
+  }
+  if (body.status !== undefined) {
+    if (!WORK_STATUSES.includes(body.status)) return res.status(400).json({ error: 'status inválido' })
+    fields.status = body.status
+  }
+  if (body.priority !== undefined) {
+    if (!PRIORITIES.includes(body.priority)) return res.status(400).json({ error: 'priority inválida' })
+    fields.priority = body.priority
+  }
+  if (body.assigneeId !== undefined) {
+    fields.assigneeId = body.assigneeId || null
+    if (fields.assigneeId && !getAgent(fields.assigneeId, { transcript: false })) return res.status(400).json({ error: 'Responsável não encontrado' })
+  }
+  if (body.goalId !== undefined) {
+    fields.goalId = body.goalId || null
+    if (fields.goalId && !getWorkspaceSnapshot().goals.some((goal) => goal.id === fields.goalId)) return res.status(400).json({ error: 'Meta não encontrada' })
+  }
+  const ok = patchWorkItem(req.params.id, fields)
   if (!ok) return res.status(404).json({ error: 'Tarefa não encontrada' })
+  res.json(broadcastSnapshot())
+})
+
+app.delete('/api/work-items/:id', (req, res) => {
+  const item = getWorkspaceSnapshot().workItems.find((w) => w.id === req.params.id)
+  if (!item) return res.status(404).json({ error: 'Tarefa não encontrada' })
+  deleteWorkItem(item.id)
+  onWorkItemRemoved(item)
+  recordEvent(item.assigneeId ?? null, `Tarefa excluída: ${item.title}`, 'system')
   res.json(broadcastSnapshot())
 })
 
@@ -386,7 +574,7 @@ app.post('/api/sessions', async (req, res) => {
   try {
     const command = await resolveCommand(runtime.command)
     const session = startSession({ agentId, command, args: runtime.sessionArgs, cwd: safeCwd, onEvent: trackedBroadcast })
-    registerAgentSession(agentId, session.id)
+    registerAgentSession(agentId, session.id, { runtimeId: runtime.id })
     broadcast({ type: 'session-started', ...session })
     res.json({ session })
   } catch (error) {
@@ -464,12 +652,20 @@ export function startCore({ port = PORT } = {}) {
   })
 }
 
+// Grava a conversa pendente de cada agente antes de encerrar: o debounce de 2 s perderia o final dela.
+export function shutdownCore() {
+  flushTranscripts()
+}
+
 export { server, PORT }
 
 // Auto-start no modo standalone (node src/index.js), mas não quando importado.
 const isMainEntry = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])
 if (isMainEntry) {
   startCore()
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.once(signal, () => { shutdownCore(); process.exit(0) })
+  }
 }
 
 
