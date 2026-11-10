@@ -50,6 +50,26 @@ function normalizeForEcho(text) {
   return String(text).toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
 }
 
+function escapeRegex(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// Casa a instrução (ou o trecho a partir de "Tarefa: ") mesmo quando a TUI quebra linhas, indenta ou
+// desenha bordas ao redor. Cortar tudo até o fim da última ocorrência descarta tanto o eco da própria
+// instrução quanto o histórico de tarefas anteriores redesenhado acima dela na tela da TUI.
+function buildInstructionBoundaryRegex(cleanInstruction) {
+  if (!cleanInstruction) return null
+  const taskIdx = cleanInstruction.indexOf('Tarefa: ')
+  const target = taskIdx >= 0 ? cleanInstruction.slice(taskIdx).trim() : cleanInstruction
+  const words = target.split(/\s+/).filter(Boolean)
+  if (words.length < 2) return null
+  const sep = '[\\s\\u2502|>\\u2022*\\u2500\\u2501\\u2550]+'
+  return new RegExp(words.map(escapeRegex).join(sep), 'g')
+}
+
+// Linhas que são apenas moldura/rodapé de TUI e não devem poluir o resumo salvo em `result`.
+const TUI_CHROME_LINE = /^(?:[\s\u2500\u2501\u2550\-_=]{4,}|>\s*|(?:\?\s+for\s+shortcuts|esc\s+to\s+cancel)\b.*|[\s\u2800-\u28ff\u25d0-\u25d3•*○●▸▹]+(?:Working|Loading|Thinking)\.{0,4}\s*|\u2514\s*Tip:.*)$/i
+
 const MAX_RESPONSE_CHARS = 30000
 const MAX_RESULT_CHARS = 1500
 
@@ -73,6 +93,9 @@ export function createTaskMonitor({
   const isPowerShell = runtimeId === 'powershell'
   const cleanInstruction = instruction ? stripAnsi(instruction).trim() : ''
   const normalizedInstruction = normalizeForEcho(cleanInstruction)
+  const instructionBoundary = buildInstructionBoundaryRegex(cleanInstruction)
+  const expectsTaskHeader = cleanInstruction.includes('Tarefa: ')
+  let seenCurrentInstruction = false
   let response = ''
   let responseChars = 0
   let timer = null
@@ -97,6 +120,7 @@ export function createTaskMonitor({
     const out = []
     for (const line of response.split('\n').map((l) => l.trimEnd())) {
       if (MARKER_LINE_SINGLE.test(line)) continue
+      if (!isPowerShell && TUI_CHROME_LINE.test(line)) continue
       if (line.trim() === '') { if (out.length && out[out.length - 1] !== '') out.push(''); continue }
       if (out[out.length - 1] === line) continue // TUIs redesenham a mesma linha várias vezes
       out.push(line)
@@ -163,13 +187,35 @@ export function createTaskMonitor({
       if (!clean) return
       if (cleanInstruction && clean.includes(cleanInstruction)) {
         clean = clean.replace(cleanInstruction, '')
+        seenCurrentInstruction = true
       } else if (looksLikeEcho(clean)) {
         return
       }
       response += clean
+      let strippedToBoundary = false
+      if (instructionBoundary) {
+        instructionBoundary.lastIndex = 0
+        let match
+        let lastEnd = -1
+        while ((match = instructionBoundary.exec(response)) !== null) {
+          lastEnd = match.index + match[0].length
+          if (match[0].length === 0) instructionBoundary.lastIndex++
+        }
+        if (lastEnd >= 0) {
+          response = response.slice(lastEnd)
+          responseChars = response.replace(/\s/g, '').length
+          seenCurrentInstruction = true
+          strippedToBoundary = true
+        }
+      }
       if (response.length > MAX_RESPONSE_CHARS) response = response.slice(-MAX_RESPONSE_CHARS)
-      if (MARKER_LINE.test(response.slice(-2000))) { finish('marker'); return }
-      responseChars += clean.replace(/\s/g, '').length
+      // Se um redesenho de TUI trouxer tarefas antigas da mesma sessão ("Tarefa: <outra>") antes de
+      // chegar o prompt da tarefa atual, ignora qualquer [TAREFA_CONCLUIDA] antigo desse histórico.
+      const isStalePriorTaskRedraw = expectsTaskHeader && !seenCurrentInstruction && /Tarefa:\s/.test(response)
+      if (!isStalePriorTaskRedraw && MARKER_LINE.test(response.slice(-2000))) { finish('marker'); return }
+      if (!strippedToBoundary && !isStalePriorTaskRedraw) {
+        responseChars += clean.replace(/\s/g, '').length
+      }
       const last = lastLines(1)[0]
       const promptBack = isPowerShell && Boolean(last) && POWERSHELL_PROMPT.test(last)
       // Poucos caracteres (spinner, redesenho de prompt) ainda não contam como resposta real,
