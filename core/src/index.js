@@ -12,7 +12,7 @@ import { assertAllowedCwd, assertSafeProjectPath, expandEnvVars, WorkspaceError 
 import { checkRequestOrigin, isFileOrigin, isLocalHost, isLocalOrigin, tokenFromRequest } from './security.js'
 import {
   configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName, registerAgentSession, trackedBroadcast,
-  syncMemoryFile, syncAllMemoryFiles, flushTranscripts, forgetAgentTranscript, forgetAllTranscripts, onWorkItemRemoved, sendAgentMessage, approveWorkItem,
+  syncMemoryFile, syncAllMemoryFiles, flushTranscripts, forgetAgentTranscript, forgetAllTranscripts, onWorkItemRemoved, sendAgentMessage, approveWorkItem, releaseDependents,
 } from './orchestrator.js'
 import {
   listSessions, listEvents, recordEvent,
@@ -519,9 +519,58 @@ app.delete('/api/goals/:id', (req, res) => {
   res.json(broadcastSnapshot())
 })
 
+// G6: valida `dependsOn` (lista de ids de tarefas) e `parentTaskId`. Recusa a própria tarefa, ids que não
+// existem e ciclos (A espera B que espera A nunca andaria). Retorna { fields } ou { error }.
+const MAX_DEPENDENCIES = 20
+function readDependencyFields(body, selfId) {
+  const fields = {}
+  const byId = new Map(getWorkspaceSnapshot().workItems.map((w) => [w.id, w]))
+  const dependsOnReaches = (start, target) => {
+    const seen = new Set()
+    const stack = [start]
+    while (stack.length) {
+      const id = stack.pop()
+      if (id === target) return true
+      if (seen.has(id)) continue
+      seen.add(id)
+      stack.push(...(byId.get(id)?.dependsOn ?? []))
+    }
+    return false
+  }
+  if (body.dependsOn !== undefined) {
+    if (body.dependsOn !== null && !Array.isArray(body.dependsOn)) return { error: 'dependsOn deve ser uma lista de tarefas' }
+    const raw = body.dependsOn ?? []
+    if (raw.some((dep) => typeof dep !== 'string' || !dep)) return { error: 'dependsOn deve conter ids de tarefas' }
+    const list = [...new Set(raw)]
+    if (list.length > MAX_DEPENDENCIES) return { error: `Uma tarefa pode depender de até ${MAX_DEPENDENCIES} tarefas` }
+    if (selfId && list.includes(selfId)) return { error: 'Uma tarefa não pode depender de si mesma' }
+    if (list.some((dep) => !byId.has(dep))) return { error: 'Tarefa da dependência não encontrada' }
+    if (selfId && list.some((dep) => dependsOnReaches(dep, selfId))) {
+      return { error: 'Essa dependência criaria um ciclo: as tarefas ficariam esperando uma pela outra' }
+    }
+    fields.dependsOn = list.length ? list : null
+  }
+  if (body.parentTaskId !== undefined) {
+    const parent = body.parentTaskId || null
+    if (parent !== null && typeof parent !== 'string') return { error: 'parentTaskId deve ser o id de uma tarefa' }
+    if (parent && parent === selfId) return { error: 'Uma tarefa não pode ser a principal de si mesma' }
+    if (parent && !byId.has(parent)) return { error: 'Tarefa principal não encontrada' }
+    if (parent && selfId) {
+      for (let cursor = byId.get(parent), steps = 0; cursor && steps < 1000; cursor = byId.get(cursor.parentTaskId), steps++) {
+        if (cursor.id === selfId) return { error: 'Essa tarefa principal criaria um ciclo' }
+        if (!cursor.parentTaskId) break
+      }
+    }
+    fields.parentTaskId = parent
+  }
+  return { fields }
+}
+
 app.post('/api/work-items', (req, res) => {
   const { id, title, description, status, assigneeId, goalId, priority } = req.body ?? {}
   if (!title) return res.status(400).json({ error: 'title é obrigatório' })
+  const deps = readDependencyFields(req.body ?? {}, null)
+  if (deps.error) return res.status(400).json({ error: deps.error })
   createWorkItem({
     id: id || randomUUID(),
     title,
@@ -530,6 +579,8 @@ app.post('/api/work-items', (req, res) => {
     assigneeId,
     goalId,
     priority: priority ?? 'media',
+    parentTaskId: deps.fields.parentTaskId ?? undefined,
+    dependsOn: deps.fields.dependsOn ?? undefined,
   })
   recordEvent(assigneeId ?? 'gerente', `Tarefa criada: ${title}`, 'create')
   res.json(broadcastSnapshot())
@@ -564,8 +615,14 @@ app.patch('/api/work-items/:id', (req, res) => {
     fields.goalId = body.goalId || null
     if (fields.goalId && !getWorkspaceSnapshot().goals.some((goal) => goal.id === fields.goalId)) return res.status(400).json({ error: 'Meta não encontrada' })
   }
-  const ok = patchWorkItem(req.params.id, fields)
-  if (!ok) return res.status(404).json({ error: 'Tarefa não encontrada' })
+  const previous = getWorkspaceSnapshot().workItems.find((w) => w.id === req.params.id)
+  if (!previous) return res.status(404).json({ error: 'Tarefa não encontrada' })
+  const deps = readDependencyFields(body, previous.id)
+  if (deps.error) return res.status(400).json({ error: deps.error })
+  Object.assign(fields, deps.fields)
+  patchWorkItem(previous.id, fields)
+  // G6: chegou a "Concluído" por aqui (mover o card ou editar): libera as tarefas que dependiam dela.
+  if (fields.status === 'done' && previous.status !== 'done') releaseDependents(previous.id)
   res.json(broadcastSnapshot())
 })
 

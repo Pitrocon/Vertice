@@ -222,7 +222,7 @@ export const api = {
   },
 
   // `assigneeId`/`goalId` vazios removem o responsável/a meta.
-  async updateWorkItem(id: string, fields: { title?: string; description?: string; status?: string; priority?: string; assigneeId?: string; goalId?: string }): Promise<MutationResult> {
+  async updateWorkItem(id: string, fields: { title?: string; description?: string; status?: string; priority?: string; assigneeId?: string; goalId?: string; dependsOn?: string[] }): Promise<MutationResult> {
     return mutate('PATCH', `/api/work-items/${encodeURIComponent(id)}`, fields)
   },
 

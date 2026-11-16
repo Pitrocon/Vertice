@@ -587,6 +587,10 @@ export async function dispatchWorkItem(workItemId, { feedback } = {}) {
 
   const agent = snapshot.agents.find((a) => a.id === item.assigneeId)
   if (!agent) throw new Error('Agente responsável não encontrado.')
+  const blockers = pendingDependencies(item, snapshot.workItems)
+  if (blockers.length) {
+    throw new Error(`Esta tarefa depende de "${blockers[0].title}"${blockers.length > 1 ? ` e de mais ${blockers.length - 1}` : ''}, ainda não concluída.`)
+  }
 
   const { sessionId, created, hadContext } = await ensureAgentSession(agent, snapshot)
 
@@ -689,7 +693,38 @@ export function approveWorkItem(workItemId) {
   patchWorkItem(item.id, { status: 'done' })
   recordEvent(item.assigneeId ?? null, `Entrega aprovada pelo gestor: ${item.title}`, 'complete')
   broadcastFn({ type: 'task-updated', workItemId: item.id, snapshot: getWorkspaceSnapshot() })
-  return { ok: true }
+  const released = releaseDependents(item.id)
+  return { ok: true, released }
+}
+
+// --- Cadeia de tarefas (G6) -------------------------------------------------------
+// Dependências que ainda não estão "done". Dependência que não existe mais não bloqueia.
+export function pendingDependencies(item, workItems) {
+  return (item.dependsOn ?? []).map((id) => workItems.find((w) => w.id === id)).filter((dep) => dep && dep.status !== 'done')
+}
+
+/**
+ * Uma tarefa chegou a "done": inicia as que dependiam dela, estão em "A fazer", têm responsável e não
+ * esperam mais nada. Despacha uma de cada vez (duas instruções digitadas ao mesmo tempo no mesmo
+ * terminal se embaralhariam). Devolve os ids que serão iniciados.
+ */
+export function releaseDependents(doneItemId) {
+  const { workItems } = getWorkspaceSnapshot()
+  const ready = workItems.filter((w) => w.status === 'todo' && w.assigneeId
+    && (w.dependsOn ?? []).includes(doneItemId) && pendingDependencies(w, workItems).length === 0)
+  if (!ready.length) return []
+  void (async () => {
+    for (const item of ready) {
+      try {
+        recordEvent(item.assigneeId, `Dependências concluídas: iniciando "${item.title}" automaticamente`, 'delegate')
+        await dispatchWorkItem(item.id)
+      } catch (error) {
+        recordEvent(item.assigneeId, `Não foi possível iniciar "${item.title}" automaticamente: ${error.message}`, 'system')
+        broadcastFn({ type: 'workspace-updated', snapshot: getWorkspaceSnapshot() })
+      }
+    }
+  })()
+  return ready.map((w) => w.id)
 }
 
 /** Tarefa excluída: para de observá-la e, se estava em andamento, libera o agente (se não houver outra). */

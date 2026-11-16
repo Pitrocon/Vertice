@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, ArrowRight, CheckCircle2, FileText, GripVertical, Pencil, Plus, RotateCcw, Save, Target, Trash2, Undo2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, CheckCircle2, FileText, GripVertical, Lock, Pencil, Plus, RotateCcw, Save, Search, Target, Trash2, Undo2, X } from 'lucide-react'
 import { Modal } from '@/components/Modal'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { useWorkspace, type WorkItemInput } from '@/store/workspace'
@@ -36,16 +36,33 @@ export function WorkPage() {
   const [modal, setModal] = useState<WorkModal>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dragOverStatus, setDragOverStatus] = useState<WorkStatus | null>(null)
+  // G6: busca e filtros do quadro (só na tela; não mudam nada no banco).
+  const [query, setQuery] = useState('')
+  const [agentFilter, setAgentFilter] = useState('')
+  const [goalFilter, setGoalFilter] = useState('')
+  const [priorityFilter, setPriorityFilter] = useState('')
   const close = () => setModal(null)
+
+  // G6: dependências que ainda não estão concluídas (dependência excluída não bloqueia).
+  const blockersOf = (item: WorkItem) => (item.dependsOn ?? [])
+    .map((id) => workItems.find((w) => w.id === id))
+    .filter((dep): dep is WorkItem => Boolean(dep && dep.status !== 'done'))
+  const blockedMessage = (blockers: WorkItem[]) =>
+    `Esta tarefa depende de "${blockers[0].title}"${blockers.length > 1 ? ` e de mais ${blockers.length - 1}` : ''}, ainda não concluída. Ela começa sozinha quando a dependência for aprovada.`
 
   // Colocar em andamento: online, despacha para a sessão real do responsável; offline (demonstração), só move.
   const startItem = (id: string) => {
+    const item = workItems.find((w) => w.id === id)
+    const blockers = item ? blockersOf(item) : []
+    if (blockers.length) { toast.info(blockedMessage(blockers)); return }
     if (serviceOnline) void dispatchWorkItem(id)
     else moveWorkItem(id, 'doing')
   }
 
   const handleMove = (item: WorkItem, next: WorkStatus) => {
     if (columnOf(item) === next) return
+    const blockers = next === 'doing' ? blockersOf(item) : []
+    if (blockers.length) { toast.info(blockedMessage(blockers)); return }
     // G4: sem responsável não há quem execute. Em vez de mover em silêncio (parecendo que está rodando),
     // abre a tarefa com o campo Responsável em foco; ao salvar com alguém escolhido, a tarefa é iniciada.
     if (next === 'doing' && !item.assigneeId) {
@@ -81,7 +98,18 @@ export function WorkPage() {
     return Math.round((items.filter((item) => item.status === 'done').length / items.length) * 100)
   }
 
-  const itemsIn = (status: WorkStatus) => workItems.filter((item) => columnOf(item) === status)
+  const normalizedQuery = query.trim().toLowerCase()
+  const filtering = Boolean(normalizedQuery || agentFilter || goalFilter || priorityFilter)
+  const matchesFilters = (item: WorkItem) => {
+    if (normalizedQuery && !`${item.title} ${item.description ?? ''}`.toLowerCase().includes(normalizedQuery)) return false
+    if (agentFilter && (agentFilter === '__none' ? Boolean(item.assigneeId) : item.assigneeId !== agentFilter)) return false
+    if (goalFilter && (goalFilter === '__none' ? Boolean(item.goalId) : item.goalId !== goalFilter)) return false
+    if (priorityFilter && item.priority !== priorityFilter) return false
+    return true
+  }
+  const visibleItems = filtering ? workItems.filter(matchesFilters) : workItems
+  const clearFilters = () => { setQuery(''); setAgentFilter(''); setGoalFilter(''); setPriorityFilter('') }
+  const itemsIn = (status: WorkStatus) => visibleItems.filter((item) => columnOf(item) === status)
 
   return (
     <div className="page">
@@ -112,6 +140,35 @@ export function WorkPage() {
             <small>{goalProgress(goal.id)}% das tarefas concluídas</small>
           </article>
         ))}
+      </section>
+
+      <section className="work-filters" aria-label="Buscar e filtrar tarefas">
+        <label className="work-filters__search">
+          <Search size={13} />
+          <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar por título ou especificação" aria-label="Buscar tarefas" />
+        </label>
+        <select value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)} aria-label="Filtrar por responsável">
+          <option value="">Todos os responsáveis</option>
+          <option value="__none">Sem responsável</option>
+          {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+        </select>
+        <select value={goalFilter} onChange={(e) => setGoalFilter(e.target.value)} aria-label="Filtrar por meta">
+          <option value="">Todas as metas</option>
+          <option value="__none">Sem meta</option>
+          {goals.map((goal) => <option key={goal.id} value={goal.id}>{goal.title}</option>)}
+        </select>
+        <select value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value)} aria-label="Filtrar por prioridade">
+          <option value="">Todas as prioridades</option>
+          <option value="alta">Alta</option>
+          <option value="media">Média</option>
+          <option value="baixa">Baixa</option>
+        </select>
+        {filtering && (
+          <>
+            <span className="work-filters__count">{visibleItems.length} de {workItems.length} tarefas</span>
+            <button className="button button--secondary button--small" onClick={clearFilters}><X size={13} /> Limpar</button>
+          </>
+        )}
       </section>
 
       <section className="work-board">
@@ -157,9 +214,10 @@ export function WorkPage() {
                   onReview={() => setModal({ kind: 'review', id: item.id })}
                   agentName={item.assigneeId ? agents.find((a) => a.id === item.assigneeId)?.name : undefined}
                   goalTitle={item.goalId ? goals.find((g) => g.id === item.goalId)?.title : undefined}
+                  blockedBy={item.status === 'done' ? [] : blockersOf(item).map((dep) => dep.title)}
                 />
               ))}
-              {itemsIn(status).length === 0 && <div className="work-column__empty">{dragOverStatus === status ? 'Solte a tarefa aqui' : 'Nenhuma tarefa'}</div>}
+              {itemsIn(status).length === 0 && <div className="work-column__empty">{dragOverStatus === status ? 'Solte a tarefa aqui' : filtering ? 'Nenhuma tarefa com esses filtros' : 'Nenhuma tarefa'}</div>}
             </div>
           </div>
         ))}
@@ -201,10 +259,12 @@ export function WorkPage() {
   )
 }
 
-function WorkCard({ item, agentName, goalTitle, isDragging, onDragStart, onDragEnd, onMove, onEdit, onDelete, onReview }: {
+function WorkCard({ item, agentName, goalTitle, blockedBy = [], isDragging, onDragStart, onDragEnd, onMove, onEdit, onDelete, onReview }: {
   item: WorkItem
   agentName?: string
   goalTitle?: string
+  /** Títulos das dependências ainda não concluídas (G6). */
+  blockedBy?: string[]
   isDragging?: boolean
   onDragStart: (event: React.DragEvent) => void
   onDragEnd: () => void
@@ -242,6 +302,7 @@ function WorkCard({ item, agentName, goalTitle, isDragging, onDragStart, onDragE
       <strong>{item.title}</strong>
       {item.description && <p className="work-card__desc">{item.description}</p>}
       {!failed && column !== item.status && <p className="work-card__invalid">Status "{item.status}" não reconhecido · edite a tarefa para corrigir.</p>}
+      {blockedBy.length > 0 && <p className="work-card__blocked" title="Começa sozinha quando as dependências forem concluídas"><Lock size={11} /> Aguardando: {blockedBy.join(', ')}</p>}
       {failed && <p className="work-card__failed">Falhou{errorPreview ? ` · ${errorPreview}` : ''}</p>}
       {resultPreview && <p className="work-card__result" title={item.result}>→ {resultPreview}</p>}
       {reviewable && (
@@ -369,12 +430,17 @@ function IssueDialog({ item, intent, onClose, onCreate, onSave, onStart }: {
   /** "start": aberto ao tentar pôr em andamento uma tarefa sem responsável (G4). */
   intent?: 'start'
   onClose: () => void
-  onCreate: (input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkPriority }) => void
+  onCreate: (input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkPriority; dependsOn?: string[] }) => void
   onSave: (id: string, input: WorkItemInput) => Promise<boolean>
   onStart: (id: string) => void
 }) {
-  const { agents, goals } = useWorkspace()
+  const { agents, goals, workItems } = useWorkspace()
   const [title, setTitle] = useState(item?.title ?? '')
+  // G6: a interface edita uma dependência; outras gravadas pela API são mantidas.
+  const [dependsOn, setDependsOn] = useState(item?.dependsOn?.[0] ?? '')
+  const [dependsTouched, setDependsTouched] = useState(false)
+  const extraDependencies = (item?.dependsOn ?? []).slice(1)
+  const dependencyOptions = workItems.filter((w) => w.id !== item?.id)
   const [description, setDescription] = useState(item?.description ?? '')
   const [assigneeId, setAssigneeId] = useState(item?.assigneeId ?? '')
   const [goalId, setGoalId] = useState(item?.goalId ?? '')
@@ -395,6 +461,9 @@ function IssueDialog({ item, intent, onClose, onCreate, onSave, onStart }: {
       assigneeId: assigneeId || undefined,
       goalId: goalId || undefined,
       priority,
+      ...(!item
+        ? (dependsOn ? { dependsOn: [dependsOn] } : {})
+        : dependsTouched ? { dependsOn: [...new Set([dependsOn, ...extraDependencies].filter(Boolean))] } : {}),
     }
     if (!item) {
       onCreate(base)
@@ -427,6 +496,16 @@ function IssueDialog({ item, intent, onClose, onCreate, onSave, onStart }: {
           </label>
           <label>Meta<select value={goalId} onChange={(e) => setGoalId(e.target.value)}><option value="">Sem meta</option>{goals.map((goal) => <option key={goal.id} value={goal.id}>{goal.title}</option>)}</select></label>
           <label>Prioridade<select value={priority} onChange={(e) => setPriority(e.target.value as WorkPriority)}><option value="alta">Alta</option><option value="media">Média</option><option value="baixa">Baixa</option></select></label>
+          <label style={{ gridColumn: '1 / -1' }}>
+            Depende da tarefa
+            <select value={dependsOn} onChange={(e) => { setDependsOn(e.target.value); setDependsTouched(true) }}>
+              <option value="">Nenhuma (pode começar quando quiser)</option>
+              {dependencyOptions.map((w) => <option key={w.id} value={w.id}>{w.title} · {w.status === 'failed' ? 'Falhou' : workStatusLabels[columnOf(w)]}</option>)}
+            </select>
+            <small className="form-hint">{extraDependencies.length
+              ? `Também espera mais ${extraDependencies.length} tarefa(s). `
+              : ''}Com responsável, ela começa sozinha quando a tarefa escolhida for concluída.</small>
+          </label>
           {item && (
             <label>Status<select value={status} onChange={(e) => setStatus(e.target.value as WorkStatus)}>{workStatusOrder.map((value) => <option key={value} value={value}>{workStatusLabels[value]}</option>)}</select></label>
           )}

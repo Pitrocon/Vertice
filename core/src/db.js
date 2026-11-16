@@ -566,6 +566,14 @@ export function setAgentParent(agentId, parentId, connectionId) {
 
 export function deleteWorkItem(id) {
   db.prepare('UPDATE work_items SET parent_task_id = NULL WHERE parent_task_id = ?').run(id)
+  // G6: quem dependia da tarefa excluída deixa de esperar por ela (senão ficaria bloqueada para sempre).
+  for (const row of db.prepare('SELECT id, depends_on FROM work_items WHERE depends_on LIKE ?').all(`%${JSON.stringify(id)}%`)) {
+    let list
+    try { list = JSON.parse(row.depends_on) } catch { continue }
+    if (!Array.isArray(list) || !list.includes(id)) continue
+    const rest = list.filter((dep) => dep !== id)
+    db.prepare('UPDATE work_items SET depends_on = ? WHERE id = ?').run(rest.length ? JSON.stringify(rest) : null, row.id)
+  }
   return db.prepare('DELETE FROM work_items WHERE id = ?').run(id).changes > 0
 }
 
@@ -671,12 +679,13 @@ export function createWorkItem({ id, title, description, status, assigneeId, goa
   )
 }
 
-export function patchWorkItem(id, { status, assigneeId, goalId, priority, title, description, result, error }) {
+export function patchWorkItem(id, { status, assigneeId, goalId, priority, title, description, result, error, parentTaskId, dependsOn }) {
   const current = db.prepare('SELECT * FROM work_items WHERE id = ?').get(id)
   if (!current) return false
   db.prepare(`
     UPDATE work_items
-    SET title = ?, description = ?, status = ?, assignee_id = ?, goal_id = ?, priority = ?, result = ?, error = ?, updated_at = ?
+    SET title = ?, description = ?, status = ?, assignee_id = ?, goal_id = ?, priority = ?, result = ?, error = ?,
+        parent_task_id = ?, depends_on = ?, updated_at = ?
     WHERE id = ?
   `).run(
     title ?? current.title,
@@ -687,6 +696,8 @@ export function patchWorkItem(id, { status, assigneeId, goalId, priority, title,
     priority ?? current.priority,
     result !== undefined ? result : current.result,
     error !== undefined ? error : current.error,
+    parentTaskId !== undefined ? (parentTaskId || null) : current.parent_task_id,
+    dependsOn !== undefined ? (dependsOn?.length ? JSON.stringify(dependsOn) : null) : current.depends_on,
     new Date().toISOString(),
     id
   )

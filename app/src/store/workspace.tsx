@@ -22,6 +22,8 @@ export interface WorkItemInput {
   priority: WorkPriority
   assigneeId?: string
   goalId?: string
+  /** G6: vazio remove as dependências; ausente não mexe. */
+  dependsOn?: string[]
 }
 
 function usePersistentState<T>(key: string, fallback: T) {
@@ -91,7 +93,7 @@ interface WorkspaceValue {
   resetDemo: () => void
   clearWorkspace: () => Promise<void>
   moveWorkItem: (id: string, status: WorkStatus) => void
-  addWorkItem: (input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority'] }) => void
+  addWorkItem: (input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority']; dependsOn?: string[] }) => void
   addGoal: (input: { title: string; description: string }) => void
   addProject: (input: { name: string; path: string; description: string }) => void
   setActiveProject: (id: string) => void
@@ -593,7 +595,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (serviceOnline) void api.patchWorkItem(id, { status }).then(applySnapshot)
   }, [setWorkItems, serviceOnline, applySnapshot])
 
-  const addWorkItem = useCallback((input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority'] }) => {
+  const addWorkItem = useCallback((input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority']; dependsOn?: string[] }) => {
     const item: WorkItem = { id: crypto.randomUUID(), status: 'todo' as const, ...input }
     setWorkItems((current) => [...current, item])
     if (serviceOnline) void api.createWorkItem(item).then(applySnapshot)

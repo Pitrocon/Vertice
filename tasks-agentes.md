@@ -434,10 +434,11 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
   - **Concluído em 16/11/2026:** rotas `approve`/`reject`, despacho com feedback, `failed` em "Aguardando aprovação" e diálogo de Revisão da Entrega. Testado via HTTP; entrega do feedback a uma CLI real e UI não testadas.
   - **Handoff:** libera `G6` e `G9`.
 
-- [ ] **G6** (BACKEND + ORQ → FRONT) — **Cadeia de tarefas dependentes (`dependsOn` / `parentTaskId`) e filtros no quadro `Work`** *(ver `tasks.md` 7.6)*:
+- [x] **G6** (BACKEND + ORQ → FRONT) — **Cadeia de tarefas dependentes (`dependsOn` / `parentTaskId`) e filtros no quadro `Work`** *(ver `tasks.md` 7.6)*:
   - `BACKEND` + `ORQ`: expor `dependsOn` e `parentTaskId` em `POST /api/work-items` e `PATCH /api/work-items/:id` (`core/src/index.js` — colunas já existentes no `db.js` e `mapWorkItem`); em `orchestrator.js`, quando uma tarefa chegar a `done`, disparar automaticamente tarefas dependentes em `todo` cujas dependências estejam 100% `done` e que tenham `assigneeId`.
   - `FRONT`: campo **"Depende da tarefa"** em `IssueDialog`, indicador visual de bloqueio no `WorkCard` e barra de busca/filtro por texto, agente, meta e prioridade em `Work.tsx`.
   - **Aceite:** criar Tarefa B dependendo da Tarefa A; ao aprovar A, B é despachada automaticamente para seu agente.
+  - **Concluído em 16/11/2026:** `dependsOn`/`parentTaskId` validados (inclui ciclos), despacho bloqueado até as dependências concluírem, liberação automática ao aprovar ou mover para concluído, campo "Depende da tarefa", indicador de bloqueio, busca e filtros. Testado via HTTP; despacho real com CLI e UI não testados.
 
 - [ ] **G7** (BACKEND → FRONT) — **Isolamento real Multi-projeto** *(ver `tasks.md` 7.7)*:
   - `BACKEND`: adicionar `project_id TEXT` às tabelas `agents`, `connections`, `goals` e `work_items` em `core/src/db.js` (migração vinculando registros existentes ao projeto ativo/primeiro projeto); filtrar `getWorkspaceSnapshot()` pelo projeto ativo; ao chamar `POST /api/projects/:id/activate` em `core/src/index.js`, encerrar sessões do projeto anterior e ressincronizar `.vertice/memory/` no novo workspace.

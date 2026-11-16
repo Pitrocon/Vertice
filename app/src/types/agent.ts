@@ -74,6 +74,9 @@ export interface WorkItem {
   result?: string
   /** Motivo da falha quando `status` é "failed". */
   error?: string
+  /** G6: ids das tarefas que precisam estar concluídas antes desta começar. */
+  dependsOn?: string[]
+  parentTaskId?: string
   createdAt?: string
   updatedAt?: string
 }
