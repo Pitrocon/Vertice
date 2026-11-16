@@ -422,9 +422,10 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
   - `FRONT`: exibir a saída em tempo real na aba `CLI's` (`app/src/pages/Org.tsx`), remover o bloco legado/inconsistente de sessões `install-*` e adicionar botão **"Abrir terminal de login"** ao lado das CLIs instaladas que exigem autenticação.
   - **Aceite:** clicar em "Instalar" mostra log progressivo na tela sem parecer travado e o usuário sabe quais CLIs precisam de `/login`.
 
-- [ ] **G4** (FRONT) — **Evitar despacho silencioso de tarefa sem responsável em `Work.tsx`** *(ver `tasks.md` 7.4)*:
+- [x] **G4** (FRONT) — **Evitar despacho silencioso de tarefa sem responsável em `Work.tsx`** *(ver `tasks.md` 7.4)*:
   - Em `handleMove` (`app/src/pages/Work.tsx`), se o usuário tentar mover ou soltar em *Em andamento* (`doing`) uma tarefa sem `assigneeId`, interromper a movimentação silenciosa e exibir orientação para escolher um responsável (ou abrir o modal da tarefa focado no campo `Responsável`).
   - **Aceite:** nenhuma tarefa entra em *Em andamento* no modo online achando que está rodando sem ter agente atribuído.
+  - **Concluído em 16/11/2026:** setas e arrastar abrem a tarefa com Responsável em foco ("Salvar e iniciar"); o Status "Em andamento" do diálogo também exige responsável e despacha. Só `tsc`/`eslint`; UI não testada no navegador.
 
 - [ ] **G5** (ORQ + BACKEND → FRONT) — **Ciclo completo de Revisão no `Work`: visualizar entrega inteira, Aprovar, Devolver com feedback e tratar `failed`** *(ver `tasks.md` 7.5)*:
   - `ORQ` + `BACKEND`: criar rota `POST /api/work-items/:id/reject` (`{ feedback }`) em `core/src/index.js` + `orchestrator.js` reabrindo a tarefa para `doing` e injetando o feedback do gestor na sessão real do agente; permitir aprovação direta para `done`.

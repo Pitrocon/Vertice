@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { toast } from 'sonner'
 import { ArrowLeft, ArrowRight, GripVertical, Pencil, Plus, Save, Target, Trash2 } from 'lucide-react'
 import { Modal } from '@/components/Modal'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
@@ -6,7 +7,7 @@ import { useWorkspace, type WorkItemInput } from '@/store/workspace'
 import { priorityLabels, workStatusLabels, workStatusOrder, type Goal, type WorkItem, type WorkPriority, type WorkStatus } from '@/types/agent'
 
 type WorkModal =
-  | { kind: 'issue'; item?: WorkItem }
+  | { kind: 'issue'; item?: WorkItem; intent?: 'start' }
   | { kind: 'goal'; goal?: Goal }
   | { kind: 'delete-issue'; item: WorkItem }
   | { kind: 'delete-goal'; goal: Goal }
@@ -28,11 +29,24 @@ export function WorkPage() {
   const [dragOverStatus, setDragOverStatus] = useState<WorkStatus | null>(null)
   const close = () => setModal(null)
 
+  // Colocar em andamento: online, despacha para a sessão real do responsável; offline (demonstração), só move.
+  const startItem = (id: string) => {
+    if (serviceOnline) void dispatchWorkItem(id)
+    else moveWorkItem(id, 'doing')
+  }
+
   const handleMove = (item: WorkItem, next: WorkStatus) => {
     if (columnOf(item) === next) return
+    // G4: sem responsável não há quem execute. Em vez de mover em silêncio (parecendo que está rodando),
+    // abre a tarefa com o campo Responsável em foco; ao salvar com alguém escolhido, a tarefa é iniciada.
+    if (next === 'doing' && !item.assigneeId) {
+      toast.info('Escolha quem vai executar esta tarefa para colocá-la em andamento')
+      setModal({ kind: 'issue', item, intent: 'start' })
+      return
+    }
     // Quando online, a movimentação dispara a execução real correspondente.
-    if (serviceOnline && next === 'doing' && item.assigneeId) {
-      void dispatchWorkItem(item.id)
+    if (next === 'doing') {
+      startItem(item.id)
       return
     }
     if (serviceOnline && next === 'review') {
@@ -141,7 +155,7 @@ export function WorkPage() {
         ))}
       </section>
 
-      {modal?.kind === 'issue' && <IssueDialog item={modal.item} onClose={close} onCreate={addWorkItem} onSave={updateWorkItem} />}
+      {modal?.kind === 'issue' && <IssueDialog item={modal.item} intent={modal.intent} onClose={close} onCreate={addWorkItem} onSave={updateWorkItem} onStart={startItem} />}
       {modal?.kind === 'goal' && <GoalDialog goal={modal.goal} onClose={close} onCreate={addGoal} onSave={updateGoal} />}
       {modal?.kind === 'delete-issue' && (
         <ConfirmDialog title={`Excluir "${modal.item.title}"?`} eyebrow="WORK / ISSUE" confirmLabel="Excluir tarefa" onClose={close} onConfirm={() => deleteWorkItem(modal.item.id)}>
@@ -214,11 +228,14 @@ function summarizeResult(result: string) {
 }
 
 /** Criar (sem `item`) ou editar (com `item`) uma tarefa. */
-function IssueDialog({ item, onClose, onCreate, onSave }: {
+function IssueDialog({ item, intent, onClose, onCreate, onSave, onStart }: {
   item?: WorkItem
+  /** "start": aberto ao tentar pôr em andamento uma tarefa sem responsável (G4). */
+  intent?: 'start'
   onClose: () => void
   onCreate: (input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkPriority }) => void
   onSave: (id: string, input: WorkItemInput) => Promise<boolean>
+  onStart: (id: string) => void
 }) {
   const { agents, goals } = useWorkspace()
   const [title, setTitle] = useState(item?.title ?? '')
@@ -226,7 +243,9 @@ function IssueDialog({ item, onClose, onCreate, onSave }: {
   const [assigneeId, setAssigneeId] = useState(item?.assigneeId ?? '')
   const [goalId, setGoalId] = useState(item?.goalId ?? '')
   const [priority, setPriority] = useState<WorkPriority>(item?.priority ?? 'media')
-  const [status, setStatus] = useState<WorkStatus>(item ? columnOf(item) : 'todo')
+  const [status, setStatus] = useState<WorkStatus>(item ? (intent === 'start' ? 'doing' : columnOf(item)) : 'todo')
+  const wantsStart = Boolean(item && status === 'doing' && columnOf(item) !== 'doing')
+  const assigneeMissing = wantsStart && !assigneeId
   const [submitted, setSubmitted] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -246,18 +265,29 @@ function IssueDialog({ item, onClose, onCreate, onSave }: {
       onClose()
       return
     }
+    // Ir para "Em andamento" exige responsável e passa pelo mesmo despacho do quadro (não só troca o status).
+    if (wantsStart && !assigneeId) return
     setSaving(true)
-    const ok = await onSave(item.id, { ...base, status })
+    const ok = await onSave(item.id, { ...base, status: wantsStart ? columnOf(item) : status })
     setSaving(false)
-    if (ok) onClose()
+    if (!ok) return
+    onClose()
+    if (wantsStart) onStart(item.id)
   }
 
   return (
     <Modal title={item ? 'Editar tarefa' : 'Nova tarefa'} eyebrow="WORK / ISSUE" onClose={onClose}>
       <form onSubmit={(event) => void submit(event)} className="agent-form">
         <div className="form-grid">
-          <label style={{ gridColumn: '1 / -1' }}>Título<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Ex.: Revisar política de aprovações" aria-invalid={submitted && !title.trim()} />{submitted && !title.trim() && <small className="field-error">Informe um título.</small>}</label>
-          <label>Responsável<select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)}><option value="">Sem responsável</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
+          <label style={{ gridColumn: '1 / -1' }}>Título<input autoFocus={intent !== 'start'} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Ex.: Revisar política de aprovações" aria-invalid={submitted && !title.trim()} />{submitted && !title.trim() && <small className="field-error">Informe um título.</small>}</label>
+          <label>
+            Responsável
+            <select autoFocus={intent === 'start'} value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)} aria-invalid={assigneeMissing && (submitted || intent === 'start')}>
+              <option value="">Sem responsável</option>
+              {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+            </select>
+            {assigneeMissing && (submitted || intent === 'start') && <small className="field-error">{agents.length ? 'Escolha quem vai executar para colocar a tarefa em andamento.' : 'Crie um agente antes: sem responsável a tarefa não pode entrar em andamento.'}</small>}
+          </label>
           <label>Meta<select value={goalId} onChange={(e) => setGoalId(e.target.value)}><option value="">Sem meta</option>{goals.map((goal) => <option key={goal.id} value={goal.id}>{goal.title}</option>)}</select></label>
           <label>Prioridade<select value={priority} onChange={(e) => setPriority(e.target.value as WorkPriority)}><option value="alta">Alta</option><option value="media">Média</option><option value="baixa">Baixa</option></select></label>
           {item && (
@@ -275,7 +305,7 @@ function IssueDialog({ item, onClose, onCreate, onSave }: {
         <footer className="modal-footer">
           {item && <span>Você também pode arrastar os cards entre as colunas do quadro Work.</span>}
           <button className="button button--secondary" type="button" onClick={onClose}>Cancelar</button>
-          <button className="button button--primary" type="submit" disabled={saving}>{item ? <><Save size={15} /> Salvar alterações</> : <><Plus size={15} /> Criar tarefa</>}</button>
+          <button className="button button--primary" type="submit" disabled={saving}>{item ? <><Save size={15} /> {wantsStart ? 'Salvar e iniciar' : 'Salvar alterações'}</> : <><Plus size={15} /> Criar tarefa</>}</button>
         </footer>
       </form>
     </Modal>
