@@ -21,12 +21,19 @@ export interface Agent {
   lastTranscript?: string
 }
 
+/** Ponto de conexão de um agente no organograma (ids dos <Handle> do AgentNode). */
+export type ConnectionHandle = 'top' | 'right' | 'bottom' | 'left'
+
 export interface AgentConnection {
   id: string
   source: string
   target: string
   label?: string
   active?: boolean
+  /** Ponto de saída no agente de origem; ausente = ponto automático. */
+  sourceHandle?: ConnectionHandle
+  /** Ponto de chegada no agente de destino; ausente = ponto automático. */
+  targetHandle?: ConnectionHandle
 }
 
 export interface ActivityEvent {

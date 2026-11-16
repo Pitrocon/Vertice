@@ -402,11 +402,12 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
 > - **Trilha Rápida 2 (Qualidade de Fluxo `Work` + CLIs):** `G4 (FRONT)` e `G8 (PKG → FRONT)` em paralelo; `G5 (ORQ + BACKEND → FRONT)` → `G6 (BACKEND + ORQ → FRONT)`; `G3 (BACKEND → FRONT)`
 > - **Trilha Estrutural 3 (Multi-projeto + Políticas + Headless + Testes):** `G7 (BACKEND → FRONT)` após fechar `G1`/`G6` (evita conflito em `db.js`/`index.js`); `G9`, `G10`, `G11` em paralelo após `G5`; `G12 (PKG + BACKEND + QA)` e `SYNC-G (QA)` no fechamento.
 
-- [ ] **G1** (BACKEND → FRONT) — **Persistir os 4 pontos de conexão (`sourceHandle` / `targetHandle`) e rótulo editável no Organograma** *(ver `tasks.md` 7.1)*:
+- [x] **G1** (BACKEND → FRONT) — **Persistir os 4 pontos de conexão (`sourceHandle` / `targetHandle`) e rótulo editável no Organograma** *(ver `tasks.md` 7.1)*:
   - `BACKEND`: adicionar `source_handle TEXT` e `target_handle TEXT` em `connections` (`core/src/db.js`, migração `SCHEMA_VERSION = 6`), retornar `sourceHandle`/`targetHandle` em `mapConnection`, aceitar os campos em `createConnection`/`POST /api/connections` e criar `PATCH /api/connections/:id` em `core/src/index.js`.
   - `FRONT`: adicionar `sourceHandle?` e `targetHandle?` em `AgentConnection` (`app/src/types/agent.ts`), repassar em `api.ts`/`workspace.tsx` e preencher `connection.sourceHandle`/`connection.targetHandle` em `handleConnect` e `flowEdges` de `Organograma.tsx`.
   - **Aceite:** puxar linha da direita de um agente para a esquerda de outro mantém exatamente esses pontos após soltar e após reiniciar o aplicativo.
   - **Handoff:** libera `G2` (Inspector e grafo sincronizados).
+  - **Concluído em 16/11/2026:** migração v6, `PATCH /api/connections/:id` e editor de rótulo no Organograma. Testado via HTTP (inclui reinício do core); UI não testada no navegador.
   - **Demo:** conectar `A (right)` → `B (left)`, fechar o Vértice, reabrir e confirmar a aresta nos mesmos pinos.
 
 - [ ] **G2** (ORQ + FRONT) — **Conexões reais no `Inspector`, envio manual entre agentes e desligamento automático do estado `active`** *(ver `tasks.md` 7.2)*:

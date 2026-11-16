@@ -21,7 +21,7 @@ import {
   upsertAgent, patchAgent, deleteAgent,
   getAgent, setAgentMemory, clearAgentMemory, wouldCreateCycle, setAgentParent,
   deleteWorkItem, patchGoal, deleteGoal, patchProject, deleteProject, releaseProjectWorkspace,
-  createConnection, deleteConnection, createGoal, createWorkItem, patchWorkItem,
+  createConnection, getConnection, patchConnection, deleteConnection, createGoal, createWorkItem, patchWorkItem,
   getSettings, getSetting, setSetting,
   listAllowedWorkspaces, addAllowedWorkspace, removeAllowedWorkspace,
 } from './db.js'
@@ -418,13 +418,50 @@ app.post('/api/agents/:id/memory', (req, res) => {
   res.json(broadcastSnapshot())
 })
 
+// Pontos de conexão de cada agente no organograma (iguais aos ids dos <Handle> do AgentNode).
+const CONNECTION_HANDLES = ['top', 'right', 'bottom', 'left']
+const MAX_CONNECTION_LABEL = 60
+
+// Valida rótulo e pinos de uma conexão. Retorna { fields } ou { error }. Campos ausentes ficam de fora.
+function readConnectionFields(body) {
+  const fields = {}
+  if (body.label !== undefined) {
+    if (typeof body.label !== 'string') return { error: 'label deve ser texto' }
+    const label = body.label.trim()
+    if (label.length > MAX_CONNECTION_LABEL) return { error: `O rótulo pode ter até ${MAX_CONNECTION_LABEL} caracteres` }
+    fields.label = label || null
+  }
+  for (const key of ['sourceHandle', 'targetHandle']) {
+    if (body[key] === undefined) continue
+    if (body[key] === null || body[key] === '') { fields[key] = null; continue }
+    if (!CONNECTION_HANDLES.includes(body[key])) return { error: `${key} inválido (use top, right, bottom ou left)` }
+    fields[key] = body[key]
+  }
+  return { fields }
+}
+
 app.post('/api/connections', (req, res) => {
-  const { id, source, target, label, active } = req.body ?? {}
+  const { id, source, target, active } = req.body ?? {}
   if (!source || !target) return res.status(400).json({ error: 'source e target são obrigatórios' })
   if (source === target) return res.status(400).json({ error: 'Um agente não pode conectar a si mesmo' })
-  createConnection({ id: id || randomUUID(), source, target, label, active })
+  const { fields, error } = readConnectionFields(req.body ?? {})
+  if (error) return res.status(400).json({ error })
+  if (!getAgent(source, { transcript: false }) || !getAgent(target, { transcript: false })) {
+    return res.status(400).json({ error: 'Os dois agentes da conexão precisam existir' })
+  }
+  createConnection({ id: id || randomUUID(), source, target, active, label: fields.label ?? undefined, sourceHandle: fields.sourceHandle, targetHandle: fields.targetHandle })
   syncAllMemoryFiles()
   recordEvent(source, `Nova conexão com ${target}`, 'system')
+  res.json(broadcastSnapshot())
+})
+
+// Editar rótulo e/ou pontos de conexão de uma linha do organograma.
+app.patch('/api/connections/:id', (req, res) => {
+  if (!getConnection(req.params.id)) return res.status(404).json({ error: 'Conexão não encontrada' })
+  const { fields, error } = readConnectionFields(req.body ?? {})
+  if (error) return res.status(400).json({ error })
+  patchConnection(req.params.id, fields)
+  if (fields.label !== undefined) syncAllMemoryFiles() // o mapa de conexões da memória viva é regravado
   res.json(broadcastSnapshot())
 })
 

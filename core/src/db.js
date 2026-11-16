@@ -97,7 +97,7 @@ db.exec(`
 // ---------------------------------------------------------------------------
 // Migracoes idempotentes baseadas em meta.schema_version. Nunca apagam dados.
 // ---------------------------------------------------------------------------
-const SCHEMA_VERSION = 5
+const SCHEMA_VERSION = 6
 
 function getSchemaVersion() {
   const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()
@@ -183,6 +183,13 @@ function runMigrations() {
     if (Array.isArray(existingApproved)) {
       const merged = Array.from(new Set([...existingApproved, ...DEFAULT_SETTINGS.approvedRuntimes]))
       setSetting('approvedRuntimes', merged)
+    }
+  }
+
+  // v6 (G1) -> pontos de conexão do organograma (cima/direita/baixo/esquerda) de cada ponta da linha.
+  if (current < 6) {
+    for (const name of ['source_handle', 'target_handle']) {
+      if (!columnExists('connections', name)) db.exec(`ALTER TABLE connections ADD COLUMN ${name} TEXT`)
     }
   }
 
@@ -342,6 +349,8 @@ function mapConnection(row) {
   return {
     id: row.id, source: row.source, target: row.target,
     ...(row.label ? { label: row.label } : {}),
+    ...(row.source_handle ? { sourceHandle: row.source_handle } : {}),
+    ...(row.target_handle ? { targetHandle: row.target_handle } : {}),
     active: Boolean(row.active),
   }
 }
@@ -600,9 +609,9 @@ export function releaseProjectWorkspace(projectId) {
   db.prepare('DELETE FROM allowed_workspaces WHERE id = ?').run(`ws-${projectId}`)
 }
 
-export function createConnection({ id, source, target, label, active }) {
-  db.prepare('INSERT OR REPLACE INTO connections (id, source, target, label, active) VALUES (?, ?, ?, ?, ?)')
-    .run(id, source, target, label ?? 'vincula', active ? 1 : 0)
+export function createConnection({ id, source, target, label, active, sourceHandle, targetHandle }) {
+  db.prepare('INSERT OR REPLACE INTO connections (id, source, target, label, active, source_handle, target_handle) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(id, source, target, label ?? 'vincula', active ? 1 : 0, sourceHandle ?? null, targetHandle ?? null)
   // Se o agente destino ainda não tinha supervisor (e não cria ciclo), vincula source como supervisor.
   const targetRow = db.prepare('SELECT created_by FROM agents WHERE id = ?').get(target)
   if (targetRow && !targetRow.created_by && !wouldCreateCycle(target, source)) {
@@ -618,6 +627,24 @@ export function deleteConnection(id) {
   if (targetRow && targetRow.created_by === conn.source) {
     db.prepare('UPDATE agents SET created_by = NULL WHERE id = ?').run(conn.target)
   }
+  return true
+}
+
+export function getConnection(id) {
+  const row = db.prepare('SELECT * FROM connections WHERE id = ?').get(id)
+  return row ? mapConnection(row) : null
+}
+
+// Rótulo e pontos de conexão. `null` em um pino volta ao ponto automático.
+export function patchConnection(id, { label, sourceHandle, targetHandle }) {
+  const current = db.prepare('SELECT * FROM connections WHERE id = ?').get(id)
+  if (!current) return false
+  db.prepare('UPDATE connections SET label = ?, source_handle = ?, target_handle = ? WHERE id = ?').run(
+    label !== undefined ? label : current.label,
+    sourceHandle !== undefined ? sourceHandle : current.source_handle,
+    targetHandle !== undefined ? targetHandle : current.target_handle,
+    id,
+  )
   return true
 }
 

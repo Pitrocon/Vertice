@@ -113,7 +113,7 @@
 ## Fase 7 — Melhorias de Fluxo, Multi-projeto e Confiabilidade (Bloco G · Pós-E15)
 > **Objetivo:** Corrigir atritos identificados na auditoria pós-E15, completar o ciclo de revisão/dependências no `Work`, isolar dados por projeto e fortalecer testes e empacotamento (detalhes por agente e critérios de aceite em `tasks-agentes.md`, Bloco G).
 
-- [ ] **7.1 (G1)** Persistir `source_handle` e `target_handle` (cima/direita/baixo/esquerda) e permitir editar rótulo nas conexões do Organograma (`core/src/db.js`, `core/src/index.js`, `AgentNode.tsx`, `Organograma.tsx`)
+- [x] **7.1 (G1)** Persistir `source_handle` e `target_handle` (cima/direita/baixo/esquerda) e permitir editar rótulo nas conexões do Organograma (`core/src/db.js`, `core/src/index.js`, `AgentNode.tsx`, `Organograma.tsx`)
 - [ ] **7.2 (G2)** Exibir conexões reais do grafo no `Inspector.tsx`, adicionar envio manual de mensagem entre agentes conectados (`POST /api/agents/:id/message`) e limpar estado `active` da aresta quando o destinatário terminar o turno (`core/src/orchestrator.js`, `Organograma.tsx`, `Inspector.tsx`)
 - [ ] **7.3 (G3)** Transmitir log/progresso em tempo real na instalação de CLIs via WebSocket (`POST /api/runtimes/:id/install`), alinhar UI/texto em `Org.tsx` (removendo código morto `install-*`) e exibir status de autenticação / botão **"Abrir terminal de login"** por CLI
 - [ ] **7.4 (G4)** Bloquear movimentação silenciosa para `Em andamento` (`doing`) quando a tarefa estiver sem responsável (`Work.tsx`), alertando o usuário para atribuir um agente antes de despachar

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Background,
   BackgroundVariant,
@@ -14,23 +14,30 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { Focus, Settings2, SquareTerminal } from 'lucide-react'
+import { Check, Focus, Settings2, SquareTerminal, Trash2, X } from 'lucide-react'
 import { AgentNode, type AgentFlowNode } from '@/components/AgentNode'
 import { Inspector } from '@/components/Inspector'
 import { TerminalPanel } from '@/components/TerminalPanel'
 import { useWorkspace } from '@/store/workspace'
-import type { Agent, TerminalLine } from '@/types/agent'
+import type { Agent, ConnectionHandle, TerminalLine } from '@/types/agent'
 
 const nodeTypes = { agent: AgentNode }
+
+const HANDLE_IDS: ConnectionHandle[] = ['top', 'right', 'bottom', 'left']
+const asHandle = (value: string | null | undefined): ConnectionHandle | undefined =>
+  HANDLE_IDS.includes(value as ConnectionHandle) ? (value as ConnectionHandle) : undefined
 
 function OrganogramaView() {
   const workspace = useWorkspace()
   const {
     agents, connections, events, selectedId, terminalOpen, terminalExpanded, terminalLines,
     showGrid, showMinimap, setSelectedId, setModal, setTerminalOpen, setTerminalExpanded,
-    setAgentPosition, addConnection, removeConnection, togglePause, runCommand, clearTerminal,
+    setAgentPosition, addConnection, updateConnectionLabel, removeConnection, togglePause, runCommand, clearTerminal,
   } = workspace
   const flowRef = useRef<ReactFlowInstance<AgentFlowNode, Edge> | null>(null)
+  // Linha clicada no organograma: abre o editor de rótulo (G1).
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
+  const selectedEdge = selectedEdgeId ? connections.find((item) => item.id === selectedEdgeId) : undefined
 
   const selectedAgent = selectedId ? agents.find((agent) => agent.id === selectedId) : undefined
   const activeTerminalAgent = selectedAgent ?? agents[0]
@@ -49,11 +56,15 @@ function OrganogramaView() {
     id: connection.id,
     source: connection.source,
     target: connection.target,
+    // Pinos gravados (G1); sem pino gravado, o React Flow escolhe o ponto automaticamente.
+    sourceHandle: connection.sourceHandle ?? null,
+    targetHandle: connection.targetHandle ?? null,
     label: connection.label,
+    selected: connection.id === selectedEdgeId,
     animated: true,
     className: connection.active ? 'flow-edge flow-edge--active' : 'flow-edge',
     markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: connection.active ? '#e8862e' : '#4d9aff' },
-  })), [connections])
+  })), [connections, selectedEdgeId])
 
   const fitCanvas = useCallback(() => {
     flowRef.current?.fitView({ padding: 0.08, duration: 250 })
@@ -87,7 +98,11 @@ function OrganogramaView() {
   }
 
   const handleConnect = (connection: Connection) => {
-    if (connection.source && connection.target) addConnection(connection.source, connection.target)
+    if (!connection.source || !connection.target) return
+    addConnection(connection.source, connection.target, {
+      sourceHandle: asHandle(connection.sourceHandle),
+      targetHandle: asHandle(connection.targetHandle),
+    })
   }
 
   const hasLiveSessionForTerminal = Boolean(activeTerminalAgent && workspace.liveSessions[activeTerminalAgent.id])
@@ -116,7 +131,9 @@ function OrganogramaView() {
             onNodesChange={handleNodesChange}
             onNodeClick={(_, node) => setSelectedId(node.id)}
             onConnect={handleConnect}
-            onEdgeDoubleClick={(_, edge) => removeConnection(edge.id)}
+            onEdgeClick={(_, edge) => setSelectedEdgeId(edge.id)}
+            onPaneClick={() => setSelectedEdgeId(null)}
+            onEdgeDoubleClick={(_, edge) => { setSelectedEdgeId(null); removeConnection(edge.id) }}
             onEdgesDelete={(deleted) => deleted.forEach((edge) => removeConnection(edge.id))}
             fitView
             fitViewOptions={{ padding: 0.08, maxZoom: 0.95 }}
@@ -140,7 +157,18 @@ function OrganogramaView() {
             <button className="icon-button" onClick={() => setModal('settings')} aria-label="Preferências do organograma" style={{ border: '1px solid var(--border-subtle)', background: 'var(--surface)' }}><Settings2 size={16} /></button>
             <button className="button button--canvas" onClick={fitCanvas}><Focus size={15} /> Enquadrar</button>
           </div>
-          <div className="canvas-hint">Arraste os nós para organizar <span>·</span> Puxe qualquer ponto lateral para conectar <span>·</span> Duplo-clique na linha para desconectar</div>
+          {selectedEdge && (
+            <EdgeEditor
+              key={selectedEdge.id}
+              label={selectedEdge.label ?? ''}
+              sourceName={agents.find((agent) => agent.id === selectedEdge.source)?.name ?? selectedEdge.source}
+              targetName={agents.find((agent) => agent.id === selectedEdge.target)?.name ?? selectedEdge.target}
+              onSave={async (label) => { if (await updateConnectionLabel(selectedEdge.id, label)) setSelectedEdgeId(null) }}
+              onRemove={() => { removeConnection(selectedEdge.id); setSelectedEdgeId(null) }}
+              onClose={() => setSelectedEdgeId(null)}
+            />
+          )}
+          <div className="canvas-hint">Arraste os nós para organizar <span>·</span> Puxe qualquer ponto lateral para conectar <span>·</span> Clique na linha para editar o rótulo</div>
         </div>
         {terminalOpen && activeTerminalAgent ? (
           <TerminalPanel
@@ -183,6 +211,45 @@ function OrganogramaView() {
         onClose={() => setSelectedId(null)}
         mobileOpen={false}
       />
+    </div>
+  )
+}
+
+/** Editor da linha selecionada: rótulo (ex.: "revisa", "entrega para") e remoção. */
+function EdgeEditor({ label, sourceName, targetName, onSave, onRemove, onClose }: {
+  label: string
+  sourceName: string
+  targetName: string
+  onSave: (label: string) => Promise<void>
+  onRemove: () => void
+  onClose: () => void
+}) {
+  const [draft, setDraft] = useState(label)
+  const [saving, setSaving] = useState(false)
+  const save = async () => {
+    if (saving) return
+    setSaving(true)
+    await onSave(draft)
+    setSaving(false)
+  }
+  return (
+    <div className="edge-editor" role="dialog" aria-label="Editar conexão">
+      <span className="edge-editor__route">{sourceName} → {targetName}</span>
+      <input
+        autoFocus
+        value={draft}
+        maxLength={60}
+        placeholder="Rótulo da conexão (ex.: revisa)"
+        aria-label="Rótulo da conexão"
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') { event.preventDefault(); void save() }
+          if (event.key === 'Escape') { event.preventDefault(); onClose() }
+        }}
+      />
+      <button className="icon-button icon-button--small" onClick={() => void save()} disabled={saving} title="Salvar rótulo" aria-label="Salvar rótulo"><Check size={14} /></button>
+      <button className="icon-button icon-button--small icon-button--danger" onClick={onRemove} title="Remover conexão" aria-label="Remover conexão"><Trash2 size={14} /></button>
+      <button className="icon-button icon-button--small" onClick={onClose} title="Fechar" aria-label="Fechar editor da conexão"><X size={14} /></button>
     </div>
   )
 }

@@ -196,6 +196,10 @@ export const api = {
     return request<WorkspaceSnapshot>('POST', '/api/connections', input)
   },
 
+  async updateConnection(id: string, fields: { label?: string; sourceHandle?: string | null; targetHandle?: string | null }): Promise<MutationResult> {
+    return mutate('PATCH', `/api/connections/${encodeURIComponent(id)}`, fields)
+  },
+
   async deleteConnection(id: string): Promise<WorkspaceSnapshot | null> {
     return request<WorkspaceSnapshot>('DELETE', `/api/connections/${encodeURIComponent(id)}`)
   },

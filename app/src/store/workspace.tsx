@@ -7,7 +7,7 @@ import {
 } from '@/data/initial'
 import type {
   Agent, AgentConnection, ActivityEvent, TerminalLine,
-  Goal, WorkItem, Project, CliRuntime, WorkStatus, WorkPriority,
+  Goal, WorkItem, Project, CliRuntime, WorkStatus, WorkPriority, ConnectionHandle,
 } from '@/types/agent'
 import type { NewAgentInput } from '@/components/AgentDialogs'
 import { reconcileTerminalLines } from '@/lib/workspace-helpers'
@@ -61,7 +61,8 @@ interface WorkspaceValue {
   setShowGrid: (show: boolean) => void
   setShowMinimap: (show: boolean) => void
   setAgentPosition: (id: string, x: number, y: number) => void
-  addConnection: (source: string, target: string) => void
+  addConnection: (source: string, target: string, handles?: { sourceHandle?: ConnectionHandle; targetHandle?: ConnectionHandle }) => void
+  updateConnectionLabel: (id: string, label: string) => Promise<boolean>
   removeConnection: (id: string) => void
   createAgent: (input: NewAgentInput) => void
   delegateToManager: (objective: string) => void
@@ -296,18 +297,32 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (serviceOnline) void api.patchAgent(id, { x, y })
   }, [setAgents, serviceOnline])
 
-  const addConnection = useCallback((source: string, target: string) => {
+  const addConnection = useCallback((source: string, target: string, handles?: { sourceHandle?: ConnectionHandle; targetHandle?: ConnectionHandle }) => {
     if (!source || !target || source === target) return
     if (connections.some((item) => item.source === source && item.target === target)) {
       toast.info('Estes agentes já estão conectados')
       return
     }
-    const conn: AgentConnection = { id: crypto.randomUUID(), source, target, label: 'vincula' }
+    // Os pontos usados ao puxar a linha (ex.: direita → esquerda) ficam gravados (G1).
+    const conn: AgentConnection = { id: crypto.randomUUID(), source, target, label: 'vincula', ...handles }
     setConnections((current) => [...current, conn])
     addEvent(source, `Nova conexão com ${agents.find((a) => a.id === target)?.name}`, 'system')
     if (serviceOnline) void api.createConnection(conn).then(applySnapshot)
     toast.success('Conexão criada no organograma')
   }, [connections, agents, setConnections, addEvent, serviceOnline, applySnapshot])
+
+  const updateConnectionLabel = useCallback(async (id: string, label: string) => {
+    const trimmed = label.trim()
+    if (serviceOnline) {
+      const { snapshot, error } = await api.updateConnection(id, { label: trimmed })
+      if (!snapshot) { toast.error(error ?? 'Não foi possível salvar o rótulo'); return false }
+      applySnapshot(snapshot)
+    } else {
+      setConnections((current) => current.map((item) => (item.id === id ? { ...item, label: trimmed || undefined } : item)))
+    }
+    toast.success(trimmed ? 'Rótulo da conexão atualizado' : 'Rótulo da conexão removido')
+    return true
+  }, [serviceOnline, applySnapshot, setConnections])
 
   const removeConnection = useCallback((id: string) => {
     if (!id) return
@@ -865,7 +880,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     agents, connections, events, selectedId, modal, terminalOpen, terminalExpanded, terminalLines,
     showGrid, showMinimap, goals, workItems, projects, activeProject, cliRuntimes,
     setSelectedId, setModal, setTerminalOpen, setTerminalExpanded, setShowGrid, setShowMinimap,
-    setAgentPosition, addConnection, removeConnection, createAgent, delegateToManager, togglePause, removeAgent,
+    setAgentPosition, addConnection, updateConnectionLabel, removeConnection, createAgent, delegateToManager, togglePause, removeAgent,
     runCommand, sendRawKey, resizeAgentSession, getRawOutput, subscribeRawOutput, clearTerminal, resetDemo, clearWorkspace,
     moveWorkItem, addWorkItem, addGoal, addProject, setActiveProject,
     checkCli, installCli, toggleCliApproved,

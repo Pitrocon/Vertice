@@ -667,3 +667,8 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
   white-space: pre-wrap; word-break: break-word;
   overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
 }
+/* ===== G1: editor da conexão selecionada no organograma ===== */
+.edge-editor { position: absolute; z-index: 6; top: 20px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); box-shadow: 0 8px 24px oklch(0 0 0 / .35); }
+.edge-editor__route { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 10px; }
+.edge-editor input { width: 200px; height: 28px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 4px; background: oklch(0.20 0.004 70); color: var(--text-primary); font-size: 11px; }
+.edge-editor input:focus { border-color: var(--accent); outline: 0; }
