@@ -91,8 +91,15 @@ export function syncAllMemoryFiles() {
 }
 
 export function flushTranscripts() { transcripts.flushAll() }
+export function flushAgentTranscript(agentId) { transcripts.flush(agentId) }
 export function forgetAgentTranscript(agentId) { transcripts.forget(agentId) }
 export function forgetAllTranscripts() { transcripts.forgetAll() }
+export function clearAgentSession(agentId, sessionId) {
+  if (!agentId) return
+  if (!sessionId || agentSessions.get(agentId) === sessionId) {
+    agentSessions.delete(agentId)
+  }
+}
 
 function recordTranscript(event) {
   if (!event?.agentId) return
@@ -177,6 +184,9 @@ function trackedBroadcast(event) {
     sessionActivity.delete(event.sessionId)
     agentOutputBuffers.delete(event.sessionId)
     injectedPrompts.delete(event.sessionId)
+    if (event.agentId && agentSessions.get(event.agentId) === event.sessionId) {
+      agentSessions.delete(event.agentId)
+    }
   }
   broadcastFn(event)
   feedTaskMonitor(event)
@@ -553,41 +563,97 @@ async function waitForSessionReady(sessionId, { quietMs = 800, maxMs = 10000 } =
   return false
 }
 
+/**
+ * Inicia uma sessão real para um agente, validando catálogo, aprovação de runtime,
+ * confinamento de diretório e executável antes de abrir o processo.
+ */
+export async function launchAgentSession({ agent, agentId, runtimeId, cwd, resume = false, cols, rows } = {}) {
+  const targetAgentId = agent?.id ?? agentId
+  if (!targetAgentId || typeof targetAgentId !== 'string') {
+    throw createStatusError(400, 'agentId válido é obrigatório para iniciar a sessão.')
+  }
+  const targetAgent = agent ?? getAgent(targetAgentId, { transcript: false })
+
+  const effectiveRuntimeId = runtimeId !== undefined
+    ? runtimeId
+    : (targetAgent ? runtimeIdForAgent(targetAgent) : null)
+  const runtime = RUNTIME_CATALOG.find((r) => r.id === effectiveRuntimeId)
+  if (!runtime) {
+    throw createStatusError(400, `Runtime "${effectiveRuntimeId ?? ''}" não está no catálogo.`)
+  }
+
+  // Confinamento: runtime precisa estar aprovado pelo TI.
+  const approved = getSetting('approvedRuntimes') ?? []
+  if (!approved.includes(runtime.id)) {
+    const label = targetAgent?.name ? ` do agente ${targetAgent.name}` : ''
+    const msg = `O runtime "${runtime.id}"${label} não está aprovado pelo TI.`
+    recordEvent(targetAgentId, `Sessão recusada: ${msg}`, 'system')
+    throw new WorkspaceError(msg)
+  }
+
+  // Confinamento: cwd precisa estar dentro de um workspace permitido.
+  if (!cwd || typeof cwd !== 'string' || !cwd.trim()) {
+    throw createStatusError(400, 'Nenhum projeto ativo. Crie um projeto na aba Projects antes de iniciar uma sessão.')
+  }
+  let safeCwd
+  try {
+    safeCwd = assertAllowedCwd(cwd, listAllowedWorkspaces())
+  } catch (error) {
+    if (error instanceof WorkspaceError) {
+      recordEvent(targetAgentId, `Sessão recusada: ${error.message}`, 'system')
+    }
+    throw error
+  }
+  mkdirSync(safeCwd, { recursive: true })
+
+  const resolvedCmd = await resolveCommand(runtime.command)
+  if (!resolvedCmd || (resolvedCmd === runtime.command && !existsSync(resolvedCmd))) {
+    const msg = `CLI não encontrada no sistema: ${runtime.name} (${runtime.command}).`
+    recordEvent(targetAgentId, `Sessão recusada: ${msg}`, 'system')
+    throw createStatusError(400, msg)
+  }
+
+  // Ponto de extensão para o G11 somar `policyArgs` aos argumentos da sessão antes de iniciá-la.
+  const policyArgs = []
+  const args = [...(runtime.sessionArgs ?? []), ...policyArgs]
+
+  const session = startSession({
+    agentId: targetAgentId,
+    runtimeId: runtime.id,
+    command: resolvedCmd,
+    args,
+    cwd: safeCwd,
+    ...(cols !== undefined ? { cols } : {}),
+    ...(rows !== undefined ? { rows } : {}),
+    onEvent: trackedBroadcast,
+  })
+  const hadContext = registerAgentSession(targetAgentId, session.id, { runtimeId: runtime.id, resume })
+  broadcastFn({ type: 'session-started', ...session })
+  return { session, hadContext }
+}
+
 // Garante uma sessao real viva para o agente, confinada ao workspace do projeto ativo.
-// Retorna { sessionId, created }: `created` indica sessão nova (a CLI ainda está subindo).
+// Retorna { sessionId, session, created, isNew, hadContext }: `created` indica sessão nova (a CLI ainda está subindo).
 async function ensureAgentSession(agent, snapshot) {
   const existingId = agentSessions.get(agent.id)
   if (existingId) {
     const stillAlive = listActiveSessions().some((s) => s.id === existingId)
-    if (stillAlive) return { sessionId: existingId, created: false }
+    if (stillAlive) return { sessionId: existingId, created: false, isNew: false }
     agentSessions.delete(agent.id)
   }
 
-  const runtimeId = runtimeIdForAgent(agent)
-  const runtime = RUNTIME_CATALOG.find((r) => r.id === runtimeId)
-  if (!runtime) throw new Error(`Runtime "${runtimeId}" não está no catálogo.`)
-
-  // Confinamento: runtime aprovado + cwd dentro de um workspace permitido.
-  const approved = getSetting('approvedRuntimes') ?? []
-  if (!approved.includes(runtimeId)) {
-    throw new WorkspaceError(`O runtime "${runtimeId}" do agente ${agent.name} não está aprovado pelo TI.`)
-  }
   const projectPath = activeProjectPath(snapshot)
-  if (!projectPath) throw new Error('Nenhum projeto ativo. Crie um projeto na aba Projects antes de despachar tarefas.')
-  const safeCwd = assertAllowedCwd(projectPath, listAllowedWorkspaces())
-  mkdirSync(safeCwd, { recursive: true })
-
-  const command = await resolveCommand(runtime.command)
-  const session = startSession({
-    agentId: agent.id,
-    command,
-    args: runtime.sessionArgs,
-    cwd: safeCwd,
-    onEvent: trackedBroadcast,
+  if (!projectPath) {
+    throw createStatusError(400, 'Nenhum projeto ativo. Crie um projeto na aba Projects antes de despachar tarefas.')
+  }
+  const runtimeId = runtimeIdForAgent(agent)
+  const { session, hadContext } = await launchAgentSession({
+    agent,
+    runtimeId,
+    cwd: projectPath,
+    resume: false,
   })
-  const hadContext = registerAgentSession(agent.id, session.id, { runtimeId, resume: false })
-  broadcastFn({ type: 'session-started', ...session })
-  return { sessionId: session.id, created: true, hadContext }
+  return { sessionId: session.id, session, created: true, isNew: true, hadContext }
 }
 
 // --- Conclusão automática (E13 / B3) ------------------------------------------

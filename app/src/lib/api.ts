@@ -71,6 +71,14 @@ export interface MutationResult {
   error?: string
 }
 
+/** Resultado do reinício de sessão de um agente (pode incluir sessão e/ou snapshot). */
+export interface RestartSessionResult {
+  ok: boolean
+  session?: LiveSessionInfo
+  snapshot?: WorkspaceSnapshot
+  error?: string
+}
+
 export interface AllowedWorkspace {
   id: string
   path: string
@@ -327,6 +335,28 @@ export const api = {
   async killSession(sessionId: string): Promise<boolean> {
     const res = await request<{ ok: boolean }>('DELETE', `/api/sessions/${sessionId}`)
     return res?.ok === true
+  },
+
+  async restartAgentSession(agentId: string): Promise<RestartSessionResult> {
+    try {
+      const res = await fetch(`${BASE}/api/agents/${encodeURIComponent(agentId)}/session/restart`, {
+        method: 'POST',
+        headers: authHeaders(),
+      })
+      const data = (await res.json().catch(() => null)) as
+        | { error?: string; session?: LiveSessionInfo; snapshot?: WorkspaceSnapshot; projects?: unknown[] }
+        | null
+      if (!res.ok) {
+        return {
+          ok: false,
+          error: data?.error ?? `Falha ao reiniciar a sessão (HTTP ${res.status}).`,
+        }
+      }
+      const snapshot = data?.snapshot ?? (data && Array.isArray(data.projects) ? (data as unknown as WorkspaceSnapshot) : undefined)
+      return { ok: true, session: data?.session, snapshot }
+    } catch {
+      return { ok: false, error: 'Serviço local indisponível.' }
+    }
   },
 }
 

@@ -12,6 +12,8 @@ import {
   setAgentMemory,
   setAgentTranscript,
   patchConnection,
+  upsertAgent,
+  deleteAgent,
 } from '../src/db.js'
 
 const BASE = 'http://localhost:7899'
@@ -64,6 +66,20 @@ test('409 ao criar agente, batch, meta ou tarefa sem projeto ativo e nada é gra
   assert.deepEqual(afterCheck.data.agents, [])
   assert.deepEqual(afterCheck.data.goals, [])
   assert.deepEqual(afterCheck.data.workItems, [])
+})
+
+test('G10: POST /api/agents/:id/session/restart sem projeto ativo devolve 400 sem abrir sessão', async () => {
+  upsertAgent({ id: 'ag-sem-proj', name: 'Sem Projeto', role: 'Dev', runtime: 'PowerShell', model: 'ps' })
+  try {
+    const res = await api('POST', '/api/agents/ag-sem-proj/session/restart')
+    assert.equal(res.status, 400)
+    assert.equal(res.data.error, 'Crie ou ative um projeto antes de reiniciar a sessão.')
+    const sessions = await api('GET', '/api/sessions')
+    assert.equal(sessions.status, 200)
+    assert.deepEqual(sessions.data.active, [])
+  } finally {
+    deleteAgent('ag-sem-proj')
+  }
 })
 
 test('isolamento entre projetos, 400 para conexão/vínculo cross-project e 404 preservando ativo', async () => {
@@ -498,5 +514,78 @@ test('G9: catálogo/runtimes expõem headless, POST/PATCH persistem headless e d
     if (prevAnthropicKey === undefined) delete process.env.ANTHROPIC_API_KEY
     else process.env.ANTHROPIC_API_KEY = prevAnthropicKey
     await api('PATCH', '/api/settings', { approvedRuntimes: originalApproved })
+  }
+})
+
+test('G10: POST /api/agents/:id/session/restart e POST /api/sessions recusam 404/400/403 sem abrir PTY', async () => {
+  await api('POST', '/api/projects/proj-a/activate')
+
+  // 1. Agente inexistente -> 404
+  const missing = await api('POST', '/api/agents/agente-inexistente/session/restart')
+  assert.equal(missing.status, 404)
+  assert.equal(missing.data.error, 'Agente não encontrado.')
+  assert.deepEqual((await api('GET', '/api/sessions')).data.active, [])
+
+  // Cria agente com Ollama no projeto ativo
+  const createOllama = await api('POST', '/api/agents', {
+    id: 'ag-ollama-restart',
+    name: 'Ollama Restart',
+    role: 'Analista',
+    runtime: 'Ollama',
+    model: 'llama3',
+  })
+  assert.equal(createOllama.status, 200)
+
+  const settingsRes = await api('GET', '/api/settings')
+  const originalApproved = settingsRes.data.settings.approvedRuntimes
+  const snapBefore = (await api('GET', '/api/workspace')).data
+  const projAPath = snapBefore.projects.find((p) => p.id === 'proj-a').path
+  const wsEntry = snapBefore.allowedWorkspaces.find((w) => w.path.toLowerCase() === projAPath.toLowerCase())
+  assert.ok(wsEntry)
+
+  try {
+    // 2. Runtime não aprovado (ollama fora de approvedRuntimes) -> 403, sem nenhuma sessão aberta
+    const withoutOllama = originalApproved.filter((id) => id !== 'ollama')
+    assert.equal((await api('PATCH', '/api/settings', { approvedRuntimes: withoutOllama })).status, 200)
+
+    const deniedRuntime = await api('POST', '/api/agents/ag-ollama-restart/session/restart')
+    assert.equal(deniedRuntime.status, 403)
+    assert.match(deniedRuntime.data.error, /aprovado/i)
+    assert.deepEqual((await api('GET', '/api/sessions')).data.active, [])
+
+    const deniedSessionRuntime = await api('POST', '/api/sessions', {
+      agentId: 'ag-ollama-restart',
+      runtimeId: 'ollama',
+    })
+    assert.equal(deniedSessionRuntime.status, 403)
+    assert.deepEqual((await api('GET', '/api/sessions')).data.active, [])
+
+    // 3. Pasta fora dos workspaces permitidos -> 403, sem nenhuma sessão aberta
+    assert.equal((await api('DELETE', `/api/settings/workspaces/${wsEntry.id}`)).status, 200)
+    try {
+      const deniedWorkspace = await api('POST', '/api/agents/ag-a1/session/restart')
+      assert.equal(deniedWorkspace.status, 403)
+      assert.deepEqual((await api('GET', '/api/sessions')).data.active, [])
+    } finally {
+      await api('POST', '/api/settings/workspaces', { id: wsEntry.id, path: wsEntry.path })
+    }
+
+    // 4. POST /api/sessions com runtime desconhecido -> 400 e cwd fora -> 403
+    const unknownRuntime = await api('POST', '/api/sessions', {
+      agentId: 'ag-a1',
+      runtimeId: 'nao-existe',
+    })
+    assert.equal(unknownRuntime.status, 400)
+
+    const outsideCwd = await api('POST', '/api/sessions', {
+      agentId: 'ag-a1',
+      runtimeId: 'claude',
+      cwd: 'C:\\Windows',
+    })
+    assert.equal(outsideCwd.status, 403)
+    assert.deepEqual((await api('GET', '/api/sessions')).data.active, [])
+  } finally {
+    await api('PATCH', '/api/settings', { approvedRuntimes: originalApproved })
+    await api('DELETE', '/api/agents/ag-ollama-restart')
   }
 })

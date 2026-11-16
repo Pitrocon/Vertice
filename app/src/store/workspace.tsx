@@ -10,6 +10,7 @@ import type {
   Goal, WorkItem, Project, CliRuntime, WorkStatus, WorkPriority, ConnectionHandle,
 } from '@/types/agent'
 import type { NewAgentInput } from '@/components/AgentDialogs'
+import { formatTextForSession } from '@/lib/terminal-input'
 import { reconcileTerminalLines, RUNTIME_NAME_TO_ID } from '@/lib/workspace-helpers'
 
 export type ModalName = 'create' | 'edit' | 'manager' | 'commands' | 'settings' | 'remove' | 'clear' | null
@@ -86,7 +87,7 @@ interface WorkspaceValue {
   promptTemplates: PromptTemplate[]
   savePromptTemplate: (name: string, prompt: string) => Promise<boolean>
   deletePromptTemplate: (id: string) => Promise<boolean>
-  runCommand: (command: string) => void
+  runCommand: (command: string, options?: { bracketedPaste?: boolean }) => void
   sendRawKey: (data: string) => void
   resizeAgentSession: (agentId: string, cols: number, rows: number) => void
   getRawOutput: (agentId: string) => string
@@ -115,6 +116,7 @@ interface WorkspaceValue {
   refreshService: () => Promise<void>
   startAgentSession: (agentId: string) => Promise<void>
   stopAgentSession: (agentId: string) => Promise<void>
+  restartAgentSession: (agentId: string) => Promise<boolean>
   /** G3: saída ao vivo das instalações de CLI, por runtime. */
   installLogs: Record<string, InstallLog>
   clearInstallLog: (runtimeId: string) => void
@@ -524,21 +526,24 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setSelectedId(agents.find((agent) => agent.kind === 'manager' && agent.id !== id)?.id ?? null)
   }, [agents, setAgents, setConnections, setWorkItems, serviceOnline, applySnapshot])
 
-  const runCommand = useCallback((command: string) => {
+  const runCommand = useCallback((command: string, options?: { bracketedPaste?: boolean }) => {
     const agent = agents.find((item) => item.id === selectedId) ?? agents[0]
     if (!agent) return
-    if (command === '/clear') {
+    const trimmed = command.trim()
+    if (trimmed === '/clear') {
       setTerminalLines((current) => ({ ...current, [agent.id]: [] }))
       return
     }
     // Com sessão real viva, tudo vai para a CLI, exceto os comandos internos reservados
     // (assim /login, /trust etc. chegam à CLI em vez de caírem na simulação).
-    if (liveSessions[agent.id] && !RESERVED_COMMANDS.has(command)) {
-      void api.sendInput(liveSessions[agent.id].id, `${command}\r`)
+    if (liveSessions[agent.id] && !RESERVED_COMMANDS.has(trimmed)) {
+      const payload = formatTextForSession(command, Boolean(options?.bracketedPaste))
+      void api.sendInput(liveSessions[agent.id].id, payload)
       return
     }
-    const lines: TerminalLine[] = [{ id: crypto.randomUUID(), type: 'command', text: command }]
-    if (command === '/help') {
+    const displayCommand = trimmed || command
+    const lines: TerminalLine[] = [{ id: crypto.randomUUID(), type: 'command', text: displayCommand }]
+    if (trimmed === '/help') {
       lines.push(
         { id: crypto.randomUUID(), type: 'output', text: '/status   Resume os agentes do workspace' },
         { id: crypto.randomUUID(), type: 'output', text: '/agents   Lista runtimes e estados' },
@@ -546,16 +551,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         { id: crypto.randomUUID(), type: 'output', text: '/delegate Abre a orquestração do Gerente' },
         { id: crypto.randomUUID(), type: 'output', text: '/clear    Limpa este terminal' },
       )
-    } else if (command === '/status') {
+    } else if (trimmed === '/status') {
       lines.push({ id: crypto.randomUUID(), type: 'output', text: `${agents.length} agentes · ${agents.filter((a) => a.status === 'working').length} executando · ${agents.filter((a) => a.status === 'paused').length} pausados` })
-    } else if (command === '/agents') {
+    } else if (trimmed === '/agents') {
       agents.forEach((item) => lines.push({ id: crypto.randomUUID(), type: 'output', text: `${item.name.padEnd(18)} ${item.runtime.padEnd(14)} ${item.status}` }))
-    } else if (command === '/create' || command === '/delegate') {
-      lines.push({ id: crypto.randomUUID(), type: 'success', text: command === '/create' ? 'Abrindo configuração manual…' : 'Abrindo delegação ao Gerente…' })
-      window.setTimeout(() => setModal(command === '/create' ? 'create' : 'manager'), 120)
+    } else if (trimmed === '/create' || trimmed === '/delegate') {
+      lines.push({ id: crypto.randomUUID(), type: 'success', text: trimmed === '/create' ? 'Abrindo configuração manual…' : 'Abrindo delegação ao Gerente…' })
+      window.setTimeout(() => setModal(trimmed === '/create' ? 'create' : 'manager'), 120)
     } else {
       lines.push(
-        { id: crypto.randomUUID(), type: 'output', text: `Comando registrado para ${agent.name}: ${command}` },
+        { id: crypto.randomUUID(), type: 'output', text: `Comando registrado para ${agent.name}: ${displayCommand}` },
         { id: crypto.randomUUID(), type: 'muted', text: 'Simulação visual: nenhuma CLI ou modelo local foi invocado.' },
       )
     }
@@ -739,6 +744,38 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       ...current, [agentId]: [...(current[agentId] ?? []), { id: crypto.randomUUID(), type: 'muted', text: 'Sessão encerrada pelo usuário.' }],
     }))
   }, [liveSessions])
+
+  const restartAgentSession = useCallback(async (agentId: string): Promise<boolean> => {
+    if (!serviceOnline) {
+      toast.error('Serviço local offline — inicie o vertice-core')
+      return false
+    }
+    const res = await api.restartAgentSession(agentId)
+    if (!res.ok) {
+      toast.error(res.error || 'Não foi possível reiniciar a sessão')
+      return false
+    }
+    if (res.snapshot) applySnapshot(res.snapshot)
+    const session = res.session
+    if (session) {
+      setLiveSessions((current) => (
+        current[agentId]?.id === session.id ? current : { ...current, [agentId]: session }
+      ))
+      setTerminalLines((current) => ({
+        ...current,
+        [agentId]: [
+          ...(current[agentId] ?? []),
+          { id: crypto.randomUUID(), type: 'success', text: `✓ Sessão reiniciada · ${session.command}` },
+          { id: crypto.randomUUID(), type: 'muted', text: `modo ${session.mode} · diretório ${session.cwd}` },
+        ],
+      }))
+    }
+    setSelectedId(agentId)
+    setTerminalOpen(true)
+    const agent = agents.find((item) => item.id === agentId)
+    toast.success(agent ? `Sessão de ${agent.name} reiniciada` : 'Sessão reiniciada')
+    return true
+  }, [agents, serviceOnline, applySnapshot])
 
   // G3: login da CLI numa janela própria do PowerShell; depois o usuário clica em "Verificar agora".
   const openLoginTerminal = useCallback(async (runtimeId: string) => {
@@ -989,7 +1026,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     checkCli, installCli, toggleCliApproved,
     settings, allowedWorkspaces, updatePolicies, dispatchWorkItem, completeWorkItem, approveWorkItem, rejectWorkItem,
     serviceOnline, realRuntimes, liveSessions, refreshService,
-    startAgentSession, stopAgentSession, installLogs, clearInstallLog, openLoginTerminal,
+    startAgentSession, stopAgentSession, restartAgentSession, installLogs, clearInstallLog, openLoginTerminal,
     updateAgent, saveAgentMemory, clearAgentMemory, sendAgentMessage,
     updateWorkItem, deleteWorkItem, updateGoal, deleteGoal, updateProject, deleteProject,
     promptTemplates, savePromptTemplate, deletePromptTemplate,

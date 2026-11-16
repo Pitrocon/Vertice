@@ -180,6 +180,7 @@ function OrganogramaView() {
             getRawOutput={workspace.getRawOutput}
             subscribeRawOutput={workspace.subscribeRawOutput}
             onTerminalResize={workspace.resizeAgentSession}
+            onRestartSession={() => workspace.restartAgentSession(activeTerminalAgent.id)}
             lines={currentTerminalLines}
             expanded={terminalExpanded}
             onSelectAgent={(id) => setSelectedId(id)}

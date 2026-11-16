@@ -1,18 +1,19 @@
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 import express from 'express'
 import { WebSocketServer } from 'ws'
-import { detectRuntimes, resolveCommand, RUNTIME_CATALOG, syncUserCliPath } from './runtimes.js'
-import { startSession, writeToSession, resizeSession, killSession, listActiveSessions } from './sessions.js'
-import { assertAllowedCwd, assertSafeProjectPath, expandEnvVars, WorkspaceError } from './workspace.js'
+import { detectRuntimes, RUNTIME_CATALOG, syncUserCliPath } from './runtimes.js'
+import { writeToSession, resizeSession, killSession, listActiveSessions } from './sessions.js'
+import { assertSafeProjectPath, expandEnvVars, WorkspaceError } from './workspace.js'
 import { checkRequestOrigin, isFileOrigin, isLocalHost, isLocalOrigin, tokenFromRequest } from './security.js'
 import {
-  configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName, registerAgentSession, trackedBroadcast,
+  configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName,
+  launchAgentSession, flushAgentTranscript, clearAgentSession,
   syncMemoryFile, syncAllMemoryFiles, flushTranscripts, forgetAgentTranscript, forgetAllTranscripts, onWorkItemRemoved, sendAgentMessage, approveWorkItem, releaseDependents,
   resetForProjectSwitch, baselineHandoffFiles, stopHeadlessRuns,
 } from './orchestrator.js'
@@ -974,39 +975,69 @@ app.post('/api/orchestrator/delegate', (req, res) => {
 })
 
 app.post('/api/sessions', async (req, res) => {
-  const { agentId, runtimeId, cwd } = req.body ?? {}
-  const runtime = RUNTIME_CATALOG.find((item) => item.id === runtimeId)
-  if (!agentId || !runtime) return res.status(400).json({ error: 'agentId e runtimeId válidos são obrigatórios' })
-
-  // Confinamento: runtime precisa estar aprovado.
-  const approved = getSetting('approvedRuntimes') ?? []
-  if (!approved.includes(runtimeId)) {
-    return res.status(403).json({ error: `O runtime "${runtimeId}" não está aprovado pelo TI.` })
+  const { agentId, runtimeId, cwd, cols, rows } = req.body ?? {}
+  if (!isFilledText(agentId) || !isFilledText(runtimeId)) {
+    return res.status(400).json({ error: 'agentId e runtimeId válidos são obrigatórios' })
   }
-
-  // Confinamento: cwd precisa estar dentro de um workspace permitido.
-  let safeCwd
+  const agent = getAgent(agentId, { transcript: false }) ?? { id: agentId, name: agentId }
   try {
-    const requested = resolveSessionCwd(cwd)
-    if (!requested) {
-      return res.status(400).json({ error: 'Nenhum projeto ativo. Crie um projeto na aba Projects antes de iniciar uma sessão.' })
-    }
-    safeCwd = assertAllowedCwd(requested, listAllowedWorkspaces())
-    // Cria o diretorio do workspace se ainda nao existir (ja validado como seguro).
-    mkdirSync(safeCwd, { recursive: true })
-  } catch (error) {
-    if (error instanceof WorkspaceError) return res.status(403).json({ error: error.message })
-    return res.status(500).json({ error: `Falha ao validar o diretório: ${error.message}` })
-  }
-
-  try {
-    const command = await resolveCommand(runtime.command)
-    const session = startSession({ agentId, command, args: runtime.sessionArgs, cwd: safeCwd, onEvent: trackedBroadcast })
-    registerAgentSession(agentId, session.id, { runtimeId: runtime.id })
-    broadcast({ type: 'session-started', ...session })
+    const { session } = await launchAgentSession({
+      agent,
+      runtimeId,
+      cwd: resolveSessionCwd(cwd),
+      resume: true,
+      cols,
+      rows,
+    })
     res.json({ session })
   } catch (error) {
+    if (error instanceof WorkspaceError) return res.status(403).json({ error: error.message })
+    if (Number.isInteger(error?.status)) return res.status(error.status).json({ error: error.message })
     res.status(500).json({ error: `Falha ao iniciar sessão: ${error.message}` })
+  }
+})
+
+// G10: reinicia a sessão do agente mantendo pasta, runtime e memória viva.
+app.post('/api/agents/:id/session/restart', async (req, res) => {
+  const agent = getAgent(req.params.id, { transcript: false })
+  if (!agent) return res.status(404).json({ error: 'Agente não encontrado.' })
+
+  const activeForAgent = listActiveSessions().filter((s) => s.agentId === agent.id)
+  const live = activeForAgent.at(-1) ?? null
+  const activeProject = getWorkspaceSnapshot().projects.find((p) => p.active) ?? null
+  const cwd = live?.cwd || activeProject?.path || ''
+  if (!cwd) {
+    return res.status(400).json({ error: 'Crie ou ative um projeto antes de reiniciar a sessão.' })
+  }
+  if (!live && activeProject && getAgentProjectId(agent.id) && getAgentProjectId(agent.id) !== activeProject.id) {
+    return res.status(409).json({ error: 'Este agente pertence a outro projeto; ative o projeto dele antes de reiniciar a sessão.' })
+  }
+
+  if (activeForAgent.length > 0) {
+    flushAgentTranscript(agent.id)
+    for (const s of activeForAgent) {
+      if (killSession(s.id)) broadcast({ type: 'session-ended', sessionId: s.id })
+      clearAgentSession(agent.id, s.id)
+    }
+  }
+
+  const runtimeId = runtimeIdFromName(agent.runtime)
+  const { cols, rows } = req.body ?? {}
+  try {
+    const { session } = await launchAgentSession({
+      agent,
+      runtimeId,
+      cwd,
+      resume: true,
+      cols,
+      rows,
+    })
+    res.json({ session, snapshot: broadcastSnapshot() })
+  } catch (error) {
+    const message = error?.message || 'Falha ao reiniciar a sessão.'
+    if (error instanceof WorkspaceError) return res.status(403).json({ error: message })
+    if (Number.isInteger(error?.status)) return res.status(error.status).json({ error: message })
+    res.status(500).json({ error: message })
   }
 })
 
