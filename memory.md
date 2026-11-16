@@ -479,3 +479,8 @@ Revisão de leitura do core/app encontrou, e CONFIRMOU rodando contra o servidor
 - **Rotas:** `DELETE /api/connections/:id`; `description` em `POST/PATCH /api/work-items`; recusa conexão de um agente com ele mesmo.
 - **Frontend:** 4 pontos de conexão por nó (`ConnectionMode.Loose`, linhas curvas tracejadas animadas); duplo-clique ou Delete numa linha remove a conexão; removidos "Nova delegação" (Organograma), "Delegar ao Gerente" (Agentes), o item da paleta e o atalho `G`; Work tem o campo "Especificação da tarefa" (aparece no card) e arrastar e soltar entre colunas (soltar em "Em andamento" despacha e em "Aguardando aprovação" conclui, como nas setas).
 - **Verificação:** `eslint` + `tsc -b && vite build` sem erros; teste de fumaça do core na porta 7999 com dados temporários (conexão criada/removida, `description` gravada/editada, memória de AAAA cita BBBB). **NÃO verificado:** entrega `[PARA:]` com uma CLI real autenticada (depende de a IA escrever a linha) e instalação do Node na máquina de teste.
+
+
+### [16/11/2026] Registro do backlog de melhorias (Fase 7 / Bloco G)
+- Registradas 12 novas demandas de melhoria em `tasks.md` (Fase 7, itens `7.1`–`7.12`) e detalhadas por responsável (`BACKEND`, `SEG`, `ORQ`, `FRONT`, `PKG`, `QA`) em `tasks-agentes.md` (Bloco G, itens `G1`–`G12` + `SYNC-G`), prontas para execução pelo time/Kiro.
+- Itens levantados a partir de inspeção direta do código atual (`db.js`, `index.js`, `orchestrator.js`, `runtimes.js`, `task-monitor.js`, `Organograma.tsx`, `Inspector.tsx`, `Work.tsx`, `Org.tsx`, `Projects.tsx`, `TerminalPanel.tsx`, `installers/electron/main.js`).

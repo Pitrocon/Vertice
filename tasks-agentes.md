@@ -389,3 +389,79 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
 - [x] Work: campo "Especificação da tarefa" + arrastar e soltar entre colunas.
 - [x] Removidos "Nova delegação" (Organograma) e "Delegar ao Gerente" (Agentes).
 - **Pendente de validação real:** repetir o teste AAAA → BBBBBBBBBBB numa máquina com CLIs autenticadas.
+
+
+---
+
+## Bloco G — Novas Demandas de Melhoria (Fase 7 · Pós-E15)
+
+> **Organização para execução pelo time/Kiro:** demandas mapeadas por auditoria direta do código em 16/11/2026. Evitar que dois agentes editem o mesmo arquivo ao mesmo tempo (`db.js`, `index.js`, `Work.tsx`, `Organograma.tsx`): seguir os handoffs abaixo.
+>
+> **Paralelismo sugerido:**
+> - **Trilha Rápida 1 (Conexões + Organograma/Inspector):** `G1 (BACKEND → FRONT)` → `G2 (ORQ + FRONT)`
+> - **Trilha Rápida 2 (Qualidade de Fluxo `Work` + CLIs):** `G4 (FRONT)` e `G8 (PKG → FRONT)` em paralelo; `G5 (ORQ + BACKEND → FRONT)` → `G6 (BACKEND + ORQ → FRONT)`; `G3 (BACKEND → FRONT)`
+> - **Trilha Estrutural 3 (Multi-projeto + Políticas + Headless + Testes):** `G7 (BACKEND → FRONT)` após fechar `G1`/`G6` (evita conflito em `db.js`/`index.js`); `G9`, `G10`, `G11` em paralelo após `G5`; `G12 (PKG + BACKEND + QA)` e `SYNC-G (QA)` no fechamento.
+
+- [ ] **G1** (BACKEND → FRONT) — **Persistir os 4 pontos de conexão (`sourceHandle` / `targetHandle`) e rótulo editável no Organograma** *(ver `tasks.md` 7.1)*:
+  - `BACKEND`: adicionar `source_handle TEXT` e `target_handle TEXT` em `connections` (`core/src/db.js`, migração `SCHEMA_VERSION = 6`), retornar `sourceHandle`/`targetHandle` em `mapConnection`, aceitar os campos em `createConnection`/`POST /api/connections` e criar `PATCH /api/connections/:id` em `core/src/index.js`.
+  - `FRONT`: adicionar `sourceHandle?` e `targetHandle?` em `AgentConnection` (`app/src/types/agent.ts`), repassar em `api.ts`/`workspace.tsx` e preencher `connection.sourceHandle`/`connection.targetHandle` em `handleConnect` e `flowEdges` de `Organograma.tsx`.
+  - **Aceite:** puxar linha da direita de um agente para a esquerda de outro mantém exatamente esses pontos após soltar e após reiniciar o aplicativo.
+  - **Handoff:** libera `G2` (Inspector e grafo sincronizados).
+  - **Demo:** conectar `A (right)` → `B (left)`, fechar o Vértice, reabrir e confirmar a aresta nos mesmos pinos.
+
+- [ ] **G2** (ORQ + FRONT) — **Conexões reais no `Inspector`, envio manual entre agentes e desligamento automático do estado `active`** *(ver `tasks.md` 7.2)*:
+  - `ORQ` + `BACKEND`: expor `POST /api/agents/:id/message` (`{ targetId, message }`) chamando `sendAgentMessage` (`core/src/orchestrator.js`); resetar `setConnectionActive(source, target, false)` ao fim do turno ou encerramento da sessão de destino.
+  - `FRONT`: passar `connections` para `Inspector.tsx` (hoje `Organograma.tsx` não passa e `Inspector` só lê `agent.createdBy`), exibir listas de entrada/saída no card de conexões e permitir enviar uma mensagem rápida para um agente conectado.
+  - **Aceite:** dois agentes ligados no Organograma exibem a ligação no `Inspector`, permitem envio direto e a animação laranja da aresta apaga quando a entrega termina.
+  - **Handoff:** após `G1`.
+
+- [ ] **G3** (BACKEND → FRONT) — **Progresso ao vivo na instalação de CLIs + status de autenticação / login rápido** *(ver `tasks.md` 7.3)*:
+  - `BACKEND`: em `POST /api/runtimes/:id/install` (`core/src/index.js`), usar `spawn` em vez de `execFile` bufferizado para emitir eventos WebSocket (`install-output`) durante o download/instalação, mantendo download portátil do Node sem UAC e `syncUserCliPath()`. Adicionar verificação leve de status de login por runtime (ou comando `authCheck` nos manifestos `runtimes/*.json`).
+  - `FRONT`: exibir a saída em tempo real na aba `CLI's` (`app/src/pages/Org.tsx`), remover o bloco legado/inconsistente de sessões `install-*` e adicionar botão **"Abrir terminal de login"** ao lado das CLIs instaladas que exigem autenticação.
+  - **Aceite:** clicar em "Instalar" mostra log progressivo na tela sem parecer travado e o usuário sabe quais CLIs precisam de `/login`.
+
+- [ ] **G4** (FRONT) — **Evitar despacho silencioso de tarefa sem responsável em `Work.tsx`** *(ver `tasks.md` 7.4)*:
+  - Em `handleMove` (`app/src/pages/Work.tsx`), se o usuário tentar mover ou soltar em *Em andamento* (`doing`) uma tarefa sem `assigneeId`, interromper a movimentação silenciosa e exibir orientação para escolher um responsável (ou abrir o modal da tarefa focado no campo `Responsável`).
+  - **Aceite:** nenhuma tarefa entra em *Em andamento* no modo online achando que está rodando sem ter agente atribuído.
+
+- [ ] **G5** (ORQ + BACKEND → FRONT) — **Ciclo completo de Revisão no `Work`: visualizar entrega inteira, Aprovar, Devolver com feedback e tratar `failed`** *(ver `tasks.md` 7.5)*:
+  - `ORQ` + `BACKEND`: criar rota `POST /api/work-items/:id/reject` (`{ feedback }`) em `core/src/index.js` + `orchestrator.js` reabrindo a tarefa para `doing` e injetando o feedback do gestor na sessão real do agente; permitir aprovação direta para `done`.
+  - `FRONT`: adicionar `'failed'`, `error?`, `createdAt?`, `updatedAt?` em `WorkItem` (`app/src/types/agent.ts`); em `Work.tsx`, parar de classificar `failed` como status inválido em *A fazer*, adicionar drawer/modal de **Revisão da Entrega** com `result`/`error` completos (hoje truncado em 140 chars no card) e botões **"Aprovar → Concluído"**, **"Devolver com feedback"** e **"Tentar novamente"** (quando `failed`).
+  - **Aceite:** gestor lê toda a saída da IA na UI, aprova em 1 clique ou devolve com correção que chega ao terminal do agente.
+  - **Handoff:** libera `G6` e `G9`.
+
+- [ ] **G6** (BACKEND + ORQ → FRONT) — **Cadeia de tarefas dependentes (`dependsOn` / `parentTaskId`) e filtros no quadro `Work`** *(ver `tasks.md` 7.6)*:
+  - `BACKEND` + `ORQ`: expor `dependsOn` e `parentTaskId` em `POST /api/work-items` e `PATCH /api/work-items/:id` (`core/src/index.js` — colunas já existentes no `db.js` e `mapWorkItem`); em `orchestrator.js`, quando uma tarefa chegar a `done`, disparar automaticamente tarefas dependentes em `todo` cujas dependências estejam 100% `done` e que tenham `assigneeId`.
+  - `FRONT`: campo **"Depende da tarefa"** em `IssueDialog`, indicador visual de bloqueio no `WorkCard` e barra de busca/filtro por texto, agente, meta e prioridade em `Work.tsx`.
+  - **Aceite:** criar Tarefa B dependendo da Tarefa A; ao aprovar A, B é despachada automaticamente para seu agente.
+
+- [ ] **G7** (BACKEND → FRONT) — **Isolamento real Multi-projeto** *(ver `tasks.md` 7.7)*:
+  - `BACKEND`: adicionar `project_id TEXT` às tabelas `agents`, `connections`, `goals` e `work_items` em `core/src/db.js` (migração vinculando registros existentes ao projeto ativo/primeiro projeto); filtrar `getWorkspaceSnapshot()` pelo projeto ativo; ao chamar `POST /api/projects/:id/activate` em `core/src/index.js`, encerrar sessões do projeto anterior e ressincronizar `.vertice/memory/` no novo workspace.
+  - `FRONT`: exibir em `Projects.tsx` contagens reais de agentes e tarefas de cada projeto (mesmo os inativos) e opção ao criar projeto de copiar equipe de outro projeto existente.
+  - **Aceite:** alternar entre Projeto A e Projeto B troca agentes, organograma, metas e tarefas no quadro sem misturar contextos.
+  - **Handoff:** fazer após `G1` e `G6` para evitar conflito de migração em `db.js`.
+
+- [ ] **G8** (PKG → FRONT) — **Seletor visual nativo de pastas no Electron** *(ver `tasks.md` 7.8)*:
+  - `PKG`: registrar `ipcMain.handle('vertice:pick-folder', ...)` usando `dialog.showOpenDialog({ properties: ['openDirectory'] })` em `installers/electron/main.js` e expor `pickFolder()` via `contextBridge` em `installers/electron/preload.cjs`.
+  - `FRONT`: em `app/src/pages/Projects.tsx` (`ProjectDialog`), adicionar botão **"Escolher pasta…"** ao lado do input de `Workspace`.
+  - **Aceite:** usuário escolhe a pasta do projeto pelo explorador do Windows sem precisar digitar caminhos com `%USERPROFILE%`.
+
+- [ ] **G9** (ORQ + BACKEND) — **Modo não-interativo / headless estruturado opcional (`B3` / `F1`)** *(ver `tasks.md` 7.9)*:
+  - Pesquisar e validar flags oficiais não-interativas de cada CLI (`runtimes/*.json` + `core/src/runtimes.js`) e adicionar modo de execução estruturado em `core/src/orchestrator.js` (captura limpa via stdout/exit-code/JSON como alternativa à heurística de `4,5 s` de `core/src/task-monitor.js`).
+  - **Aceite:** tarefas marcadas para execução automática concluem com saída limpa sem capturar moldura de TUI nem depender de silêncio por tempo.
+
+- [ ] **G10** (FRONT + BACKEND) — **Ergonomia do Terminal (`TerminalPanel.tsx` / `LiveTerminal.tsx`)** *(ver `tasks.md` 7.10)*:
+  - Adicionar botões **"Copiar saída"**, **"Reiniciar sessão"** (encerra e reabre mantendo Memória Viva) e envio seguro de instruções multilinha (achatamento/bracketed paste sem disparar múltiplos Enters), além de clarificar ou unificar a barra inferior `<input>` quando `LiveTerminal` (`xterm.js`) estiver focado.
+  - **Aceite:** copiar conversa e colar textos longos sem quebrar submissões na TUI funcionam de forma previsível.
+
+- [ ] **G11** (SEG + ORQ) — **Aplicação efetiva das "Políticas do setor" (`Org.tsx`)** *(ver `tasks.md` 7.11)*:
+  - Fazer `allowDestructiveCommands`, `allowNetwork` e `allowCredentials` (`settings.policies`) integrarem o arquivo `.vertice/memory/<agente>.md` e as instruções/flags aplicadas ao iniciar sessão (`core/src/agent-memory.js`, `core/src/orchestrator.js`, `core/src/sessions.js`), documentando na UI de `Org.tsx` exatamente o que é bloqueio técnico vs diretiva para a CLI.
+  - **Aceite:** desligar uma política reflete nas próximas sessões iniciadas e nos arquivos `.vertice/memory/*.md` sem contradição com a descrição da UI.
+
+- [ ] **G12** (PKG + BACKEND + QA) — **Resiliência do Electron, limpeza de código morto e suíte de testes automatizados** *(ver `tasks.md` 7.12)*:
+  - `PKG`: em `installers/electron/main.js`, tratar `EADDRINUSE` na porta `7845` (exibir erro claro ao usuário ou negociar porta livre via IPC) e configurar ícone oficial `.ico` no build do `installers/electron/package.json`.
+  - `BACKEND` + `FRONT`: remover resíduos não usados da delegação removida na E15 (`delegateToManager`, `ManagerDialog`, rota `/api/orchestrator/delegate` e import `canDelegate` não utilizado em `core/src/index.js`), se confirmado que não haverá volta desse fluxo.
+  - `QA`: adicionar `"test": "node --test test/*.test.js"` em `core/package.json` e criar suíte automatizada em `core/test/` cobrindo `db.js` (migrações v1→v6, `connections`, `work_items.description`), `agent-memory.js`, `task-monitor.js`, `security.js`, `runtimes.js` (`syncUserCliPath`) e `orchestrator.js` (roteador `[PARA:]`, watcher `handoff*.md`, auto-repasse).
+  - **Aceite:** `cd core && npm test` e `cd app && npm run lint && npm run build` passam 100%, e o aplicativo empacotado lida com porta ocupada sem abrir silenciosamente "offline".
+
+- [ ] **SYNC-G** (QA) — Fechamento do Bloco G: rodar toda a suíte `core/test/`, `eslint`, `vite build`, reconstruir `Vertice-Setup-0.1.0.exe`, testar instalação limpa + multi-projeto + comunicação `A → B` com CLIs reais e atualizar `memory.md` / `tasks.md`.
