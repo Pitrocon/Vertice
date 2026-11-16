@@ -427,10 +427,11 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
   - **Aceite:** nenhuma tarefa entra em *Em andamento* no modo online achando que está rodando sem ter agente atribuído.
   - **Concluído em 16/11/2026:** setas e arrastar abrem a tarefa com Responsável em foco ("Salvar e iniciar"); o Status "Em andamento" do diálogo também exige responsável e despacha. Só `tsc`/`eslint`; UI não testada no navegador.
 
-- [ ] **G5** (ORQ + BACKEND → FRONT) — **Ciclo completo de Revisão no `Work`: visualizar entrega inteira, Aprovar, Devolver com feedback e tratar `failed`** *(ver `tasks.md` 7.5)*:
+- [x] **G5** (ORQ + BACKEND → FRONT) — **Ciclo completo de Revisão no `Work`: visualizar entrega inteira, Aprovar, Devolver com feedback e tratar `failed`** *(ver `tasks.md` 7.5)*:
   - `ORQ` + `BACKEND`: criar rota `POST /api/work-items/:id/reject` (`{ feedback }`) em `core/src/index.js` + `orchestrator.js` reabrindo a tarefa para `doing` e injetando o feedback do gestor na sessão real do agente; permitir aprovação direta para `done`.
   - `FRONT`: adicionar `'failed'`, `error?`, `createdAt?`, `updatedAt?` em `WorkItem` (`app/src/types/agent.ts`); em `Work.tsx`, parar de classificar `failed` como status inválido em *A fazer*, adicionar drawer/modal de **Revisão da Entrega** com `result`/`error` completos (hoje truncado em 140 chars no card) e botões **"Aprovar → Concluído"**, **"Devolver com feedback"** e **"Tentar novamente"** (quando `failed`).
   - **Aceite:** gestor lê toda a saída da IA na UI, aprova em 1 clique ou devolve com correção que chega ao terminal do agente.
+  - **Concluído em 16/11/2026:** rotas `approve`/`reject`, despacho com feedback, `failed` em "Aguardando aprovação" e diálogo de Revisão da Entrega. Testado via HTTP; entrega do feedback a uma CLI real e UI não testadas.
   - **Handoff:** libera `G6` e `G9`.
 
 - [ ] **G6** (BACKEND + ORQ → FRONT) — **Cadeia de tarefas dependentes (`dependsOn` / `parentTaskId`) e filtros no quadro `Work`** *(ver `tasks.md` 7.6)*:

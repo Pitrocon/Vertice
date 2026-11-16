@@ -268,6 +268,14 @@ export const api = {
     return request<{ ok: boolean; sessionId?: string; snapshot: WorkspaceSnapshot }>('POST', `/api/work-items/${id}/dispatch`)
   },
 
+  async approveWorkItem(id: string): Promise<MutationResult> {
+    return mutate('POST', `/api/work-items/${encodeURIComponent(id)}/approve`)
+  },
+
+  async rejectWorkItem(id: string, feedback: string): Promise<MutationResult> {
+    return mutate('POST', `/api/work-items/${encodeURIComponent(id)}/reject`, { feedback })
+  },
+
   async completeWorkItem(id: string, input: { result?: string; error?: string }): Promise<{ ok: boolean; snapshot: WorkspaceSnapshot } | null> {
     return request<{ ok: boolean; snapshot: WorkspaceSnapshot }>('POST', `/api/work-items/${id}/complete`, input)
   },

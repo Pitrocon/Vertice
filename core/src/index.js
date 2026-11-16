@@ -12,7 +12,7 @@ import { assertAllowedCwd, assertSafeProjectPath, expandEnvVars, WorkspaceError 
 import { checkRequestOrigin, isFileOrigin, isLocalHost, isLocalOrigin, tokenFromRequest } from './security.js'
 import {
   configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName, registerAgentSession, trackedBroadcast,
-  syncMemoryFile, syncAllMemoryFiles, flushTranscripts, forgetAgentTranscript, forgetAllTranscripts, onWorkItemRemoved, sendAgentMessage,
+  syncMemoryFile, syncAllMemoryFiles, flushTranscripts, forgetAgentTranscript, forgetAllTranscripts, onWorkItemRemoved, sendAgentMessage, approveWorkItem,
 } from './orchestrator.js'
 import {
   listSessions, listEvents, recordEvent,
@@ -605,6 +605,33 @@ app.post('/api/work-items/:id/complete', async (req, res) => {
   const out = await completeWorkItem(req.params.id, { result, error })
   if (!out.ok) return res.status(404).json({ error: out.error })
   res.json({ ...out, snapshot: getWorkspaceSnapshot() })
+})
+
+// G5: aprovar a entrega ("Aguardando aprovação" -> "Concluído").
+app.post('/api/work-items/:id/approve', (req, res) => {
+  const out = approveWorkItem(req.params.id)
+  if (!out.ok) return res.status(out.status).json({ error: out.error })
+  res.json(getWorkspaceSnapshot())
+})
+
+// G5: devolver com feedback. A tarefa volta para "Em andamento" e o feedback é digitado na sessão real
+// do responsável junto com a tarefa (também vale para "Falhou").
+const MAX_FEEDBACK = 2000
+app.post('/api/work-items/:id/reject', async (req, res) => {
+  const { feedback } = req.body ?? {}
+  const item = getWorkspaceSnapshot().workItems.find((w) => w.id === req.params.id)
+  if (!item) return res.status(404).json({ error: 'Tarefa não encontrada' })
+  if (typeof feedback !== 'string' || !feedback.trim()) return res.status(400).json({ error: 'Escreva o que precisa ser corrigido' })
+  if (feedback.length > MAX_FEEDBACK) return res.status(400).json({ error: `O feedback pode ter até ${MAX_FEEDBACK} caracteres` })
+  if (!['review', 'failed'].includes(item.status)) return res.status(409).json({ error: 'Só tarefas em "Aguardando aprovação" ou que falharam podem ser devolvidas' })
+  if (!item.assigneeId) return res.status(400).json({ error: 'A tarefa não tem um responsável atribuído' })
+  try {
+    await dispatchWorkItem(item.id, { feedback: feedback.replace(/\s*[\r\n]+\s*/g, ' ').trim() })
+    res.json(getWorkspaceSnapshot())
+  } catch (error) {
+    if (error instanceof WorkspaceError) return res.status(403).json({ error: error.message })
+    res.status(400).json({ error: error.message })
+  }
 })
 
 // B5: Gerente real cria subagentes + conexoes + tarefas a partir de um objetivo.

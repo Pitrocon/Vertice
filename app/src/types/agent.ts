@@ -51,6 +51,8 @@ export interface TerminalLine {
 }
 
 export type WorkStatus = 'todo' | 'doing' | 'review' | 'done'
+/** Status gravado da tarefa: as 4 colunas do quadro + "failed" (exibida em Aguardando aprovação). */
+export type WorkItemStatus = WorkStatus | 'failed'
 export type WorkPriority = 'alta' | 'media' | 'baixa'
 
 export interface Goal {
@@ -64,12 +66,16 @@ export interface WorkItem {
   title: string
   /** Especificação detalhada da tarefa (instruções e critérios de aceite). */
   description?: string
-  status: WorkStatus
+  status: WorkItemStatus
   assigneeId?: string
   goalId?: string
   priority: WorkPriority
-  /** Saída resumida da IA ao concluir (preenchida pelo core ao ir para review). */
+  /** Saída da IA ao concluir (preenchida pelo core ao ir para review). */
   result?: string
+  /** Motivo da falha quando `status` é "failed". */
+  error?: string
+  createdAt?: string
+  updatedAt?: string
 }
 
 export interface Project {

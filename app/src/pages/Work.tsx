@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, ArrowRight, GripVertical, Pencil, Plus, Save, Target, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, CheckCircle2, FileText, GripVertical, Pencil, Plus, RotateCcw, Save, Target, Trash2, Undo2 } from 'lucide-react'
 import { Modal } from '@/components/Modal'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { useWorkspace, type WorkItemInput } from '@/store/workspace'
@@ -10,19 +10,28 @@ type WorkModal =
   | { kind: 'issue'; item?: WorkItem; intent?: 'start' }
   | { kind: 'goal'; goal?: Goal }
   | { kind: 'delete-issue'; item: WorkItem }
+  | { kind: 'review'; id: string }
   | { kind: 'delete-goal'; goal: Goal }
   | null
 
-// Status que a interface não conhece (ex.: "failed" ou um valor antigo inválido) não some do quadro:
-// a tarefa aparece em "A fazer", com um aviso, e pode ser editada ou excluída.
+// "failed" fica em "Aguardando aprovação": o gestor decide (tentar de novo ou devolver com feedback).
+// Status que a interface não conhece (valor antigo inválido) não some do quadro: a tarefa aparece em
+// "A fazer", com um aviso, e pode ser editada ou excluída.
 function columnOf(item: WorkItem): WorkStatus {
-  return workStatusOrder.includes(item.status) ? item.status : 'todo'
+  if (item.status === 'failed') return 'review'
+  return workStatusOrder.includes(item.status as WorkStatus) ? (item.status as WorkStatus) : 'todo'
+}
+
+const formatDateTime = (value?: string) => {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
 }
 
 export function WorkPage() {
   const {
     agents, goals, workItems, moveWorkItem, addWorkItem, addGoal, updateWorkItem, deleteWorkItem, updateGoal, deleteGoal,
-    dispatchWorkItem, completeWorkItem, serviceOnline,
+    dispatchWorkItem, completeWorkItem, approveWorkItem, rejectWorkItem, serviceOnline,
   } = useWorkspace()
   const [modal, setModal] = useState<WorkModal>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
@@ -145,6 +154,7 @@ export function WorkPage() {
                   onMove={(next) => handleMove(item, next)}
                   onEdit={() => setModal({ kind: 'issue', item })}
                   onDelete={() => setModal({ kind: 'delete-issue', item })}
+                  onReview={() => setModal({ kind: 'review', id: item.id })}
                   agentName={item.assigneeId ? agents.find((a) => a.id === item.assigneeId)?.name : undefined}
                   goalTitle={item.goalId ? goals.find((g) => g.id === item.goalId)?.title : undefined}
                 />
@@ -157,6 +167,21 @@ export function WorkPage() {
 
       {modal?.kind === 'issue' && <IssueDialog item={modal.item} intent={modal.intent} onClose={close} onCreate={addWorkItem} onSave={updateWorkItem} onStart={startItem} />}
       {modal?.kind === 'goal' && <GoalDialog goal={modal.goal} onClose={close} onCreate={addGoal} onSave={updateGoal} />}
+      {modal?.kind === 'review' && (() => {
+        const item = workItems.find((w) => w.id === modal.id)
+        if (!item) return null
+        return (
+          <ReviewDialog
+            item={item}
+            agentName={item.assigneeId ? agents.find((a) => a.id === item.assigneeId)?.name : undefined}
+            serviceOnline={serviceOnline}
+            onClose={close}
+            onApprove={approveWorkItem}
+            onReject={rejectWorkItem}
+            onRetry={(id) => { close(); void dispatchWorkItem(id) }}
+          />
+        )
+      })()}
       {modal?.kind === 'delete-issue' && (
         <ConfirmDialog title={`Excluir "${modal.item.title}"?`} eyebrow="WORK / ISSUE" confirmLabel="Excluir tarefa" onClose={close} onConfirm={() => deleteWorkItem(modal.item.id)}>
           <p>{modal.item.status === 'doing'
@@ -176,7 +201,7 @@ export function WorkPage() {
   )
 }
 
-function WorkCard({ item, agentName, goalTitle, isDragging, onDragStart, onDragEnd, onMove, onEdit, onDelete }: {
+function WorkCard({ item, agentName, goalTitle, isDragging, onDragStart, onDragEnd, onMove, onEdit, onDelete, onReview }: {
   item: WorkItem
   agentName?: string
   goalTitle?: string
@@ -186,11 +211,15 @@ function WorkCard({ item, agentName, goalTitle, isDragging, onDragStart, onDragE
   onMove: (status: WorkStatus) => void
   onEdit: () => void
   onDelete: () => void
+  onReview: () => void
 }) {
   const column = columnOf(item)
   const index = workStatusOrder.indexOf(column)
-  // Antes de aprovar, o gestor vê o que a IA entregou (últimas linhas do resultado).
+  // Antes de aprovar, o gestor vê o que a IA entregou (últimas linhas); a entrega inteira fica na revisão.
+  const failed = item.status === 'failed'
   const resultPreview = (item.status === 'review' || item.status === 'done') && item.result ? summarizeResult(item.result) : ''
+  const errorPreview = failed && item.error ? summarizeResult(item.error) : ''
+  const reviewable = item.status === 'review' || item.status === 'done' || failed
   return (
     <article
       className={`work-card ${isDragging ? 'work-card--dragging' : ''}`}
@@ -212,8 +241,14 @@ function WorkCard({ item, agentName, goalTitle, isDragging, onDragStart, onDragE
       </div>
       <strong>{item.title}</strong>
       {item.description && <p className="work-card__desc">{item.description}</p>}
-      {column !== item.status && <p className="work-card__invalid">Status "{item.status}" não reconhecido · edite a tarefa para corrigir.</p>}
+      {!failed && column !== item.status && <p className="work-card__invalid">Status "{item.status}" não reconhecido · edite a tarefa para corrigir.</p>}
+      {failed && <p className="work-card__failed">Falhou{errorPreview ? ` · ${errorPreview}` : ''}</p>}
       {resultPreview && <p className="work-card__result" title={item.result}>→ {resultPreview}</p>}
+      {reviewable && (
+        <button className="work-card__review" onClick={onReview}>
+          <FileText size={12} /> {item.status === 'done' ? 'Ver entrega' : 'Revisar entrega'}
+        </button>
+      )}
       <footer>
         {agentName && <span className="work-card__assignee">{agentName}</span>}
         {goalTitle && <small>{goalTitle}</small>}
@@ -225,6 +260,107 @@ function WorkCard({ item, agentName, goalTitle, isDragging, onDragStart, onDragE
 function summarizeResult(result: string) {
   const text = result.split('\n').map((line) => line.trim()).filter(Boolean).slice(-2).join(' · ')
   return text.length > 140 ? `${text.slice(0, 137)}…` : text
+}
+
+/**
+ * Revisão da Entrega (G5): saída completa da IA (e o erro, se falhou), com as decisões do gestor.
+ * "Aguardando aprovação": Aprovar -> Concluído ou Devolver com feedback. "Falhou": Tentar novamente ou
+ * Devolver com feedback. "Concluído": só leitura.
+ */
+function ReviewDialog({ item, agentName, serviceOnline, onClose, onApprove, onReject, onRetry }: {
+  item: WorkItem
+  agentName?: string
+  serviceOnline: boolean
+  onClose: () => void
+  onApprove: (id: string) => Promise<boolean>
+  onReject: (id: string, feedback: string) => Promise<boolean>
+  onRetry: (id: string) => void
+}) {
+  const [writingFeedback, setWritingFeedback] = useState(false)
+  const [feedback, setFeedback] = useState('')
+  const [busy, setBusy] = useState(false)
+  const failed = item.status === 'failed'
+  const pending = item.status === 'review' || failed
+  const statusLabel = failed ? 'Falhou' : workStatusLabels[columnOf(item)]
+  const updated = formatDateTime(item.updatedAt)
+
+  const approve = async () => {
+    setBusy(true)
+    const ok = await onApprove(item.id)
+    setBusy(false)
+    if (ok) onClose()
+  }
+
+  const reject = async () => {
+    if (!feedback.trim()) return
+    setBusy(true)
+    const ok = await onReject(item.id, feedback.trim())
+    setBusy(false)
+    if (ok) onClose()
+  }
+
+  return (
+    <Modal title={item.title} eyebrow="WORK / REVISÃO DA ENTREGA" onClose={onClose} wide>
+      <div className="review-view">
+        <dl className="review-meta">
+          <div><dt>Responsável</dt><dd>{agentName ?? 'Sem responsável'}</dd></div>
+          <div><dt>Status</dt><dd className={failed ? 'is-failed' : ''}>{statusLabel}</dd></div>
+          {updated && <div><dt>Atualizada</dt><dd>{updated}</dd></div>}
+        </dl>
+        {item.description && (
+          <section>
+            <span className="section-label">ESPECIFICAÇÃO</span>
+            <p className="review-spec">{item.description}</p>
+          </section>
+        )}
+        {failed && (
+          <section>
+            <span className="section-label">ERRO</span>
+            <pre className="review-output review-output--error">{item.error || 'A tarefa falhou sem mensagem de erro.'}</pre>
+          </section>
+        )}
+        <section>
+          <span className="section-label">ENTREGA DA IA</span>
+          {item.result
+            ? <pre className="review-output">{item.result}</pre>
+            : <p className="review-empty">Nenhuma saída registrada. Abra o terminal do agente para ver a conversa completa.</p>}
+          <small className="review-note">Texto capturado do terminal pela detecção automática de conclusão; pode faltar ou sobrar trecho da conversa.</small>
+        </section>
+        {writingFeedback && (
+          <label className="review-feedback">
+            O que precisa ser corrigido
+            <textarea
+              autoFocus
+              value={feedback}
+              maxLength={2000}
+              rows={4}
+              onChange={(event) => setFeedback(event.target.value)}
+              placeholder="Ex.: faltou a tabela de custos; refaça a seção 2 com os números de outubro."
+            />
+            <small>Vai para o terminal real de {agentName ?? 'responsável'} junto com a tarefa, e a tarefa volta para "Em andamento".</small>
+          </label>
+        )}
+      </div>
+      <footer className="modal-footer">
+        {pending && !serviceOnline && <span>Devolver e tentar de novo precisam do serviço local (vertice-core).</span>}
+        {writingFeedback ? (
+          <>
+            <button className="button button--secondary" type="button" disabled={busy} onClick={() => setWritingFeedback(false)}>Cancelar</button>
+            <button className="button button--primary" type="button" disabled={busy || !feedback.trim()} onClick={() => void reject()}><Undo2 size={15} /> Devolver para o agente</button>
+          </>
+        ) : pending ? (
+          <>
+            <button className="button button--secondary" type="button" disabled={busy || !serviceOnline || !item.assigneeId} onClick={() => setWritingFeedback(true)}><Undo2 size={15} /> Devolver com feedback</button>
+            {failed
+              ? <button className="button button--primary" type="button" disabled={busy || !serviceOnline || !item.assigneeId} onClick={() => onRetry(item.id)}><RotateCcw size={15} /> Tentar novamente</button>
+              : <button className="button button--primary" type="button" disabled={busy} onClick={() => void approve()}><CheckCircle2 size={15} /> Aprovar → Concluído</button>}
+          </>
+        ) : (
+          <button className="button button--secondary" type="button" onClick={onClose}>Fechar</button>
+        )}
+      </footer>
+    </Modal>
+  )
 }
 
 /** Criar (sem `item`) ou editar (com `item`) uma tarefa. */
@@ -268,7 +404,8 @@ function IssueDialog({ item, intent, onClose, onCreate, onSave, onStart }: {
     // Ir para "Em andamento" exige responsável e passa pelo mesmo despacho do quadro (não só troca o status).
     if (wantsStart && !assigneeId) return
     setSaving(true)
-    const ok = await onSave(item.id, { ...base, status: wantsStart ? columnOf(item) : status })
+    // Status só vai quando muda: editar uma tarefa que falhou não deve transformá-la em "review".
+    const ok = await onSave(item.id, { ...base, ...(!wantsStart && status !== columnOf(item) ? { status } : {}) })
     setSaving(false)
     if (!ok) return
     onClose()

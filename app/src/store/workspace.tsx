@@ -17,7 +17,8 @@ export type ModalName = 'create' | 'edit' | 'manager' | 'commands' | 'settings' 
 export interface WorkItemInput {
   title: string
   description?: string
-  status: WorkStatus
+  /** Só enviado quando muda (uma tarefa que falhou não deve virar "review" ao editar o título). */
+  status?: WorkStatus
   priority: WorkPriority
   assigneeId?: string
   goalId?: string
@@ -102,6 +103,8 @@ interface WorkspaceValue {
   updatePolicies: (policies: Partial<VerticeSettings['policies']>) => void
   dispatchWorkItem: (id: string) => Promise<void>
   completeWorkItem: (id: string, result?: string) => Promise<void>
+  approveWorkItem: (id: string) => Promise<boolean>
+  rejectWorkItem: (id: string, feedback: string) => Promise<boolean>
   serviceOnline: boolean
   realRuntimes: DetectedRuntime[] | null
   liveSessions: Record<string, LiveSessionInfo>
@@ -721,6 +724,29 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     else toast.error('Não foi possível despachar a tarefa (verifique responsável, runtime aprovado e workspace)')
   }, [serviceOnline, applySnapshot])
 
+  // G5: aprovar a entrega revisada ("Aguardando aprovação" -> "Concluído").
+  const approveWorkItem = useCallback(async (id: string) => {
+    if (!serviceOnline) {
+      setWorkItems((list) => list.map((item) => (item.id === id ? { ...item, status: 'done' } : item)))
+      return true
+    }
+    const { snapshot, error } = await api.approveWorkItem(id)
+    if (!snapshot) { toast.error(error ?? 'Não foi possível aprovar a tarefa'); return false }
+    applySnapshot(snapshot)
+    toast.success('Entrega aprovada')
+    return true
+  }, [serviceOnline, applySnapshot, setWorkItems])
+
+  // G5: devolver com feedback; o core digita a correção na sessão real do responsável.
+  const rejectWorkItem = useCallback(async (id: string, feedback: string) => {
+    if (!serviceOnline) { toast.error('Devolver para o agente precisa do serviço local, que está offline'); return false }
+    const { snapshot, error } = await api.rejectWorkItem(id, feedback)
+    if (!snapshot) { toast.error(error ?? 'Não foi possível devolver a tarefa'); return false }
+    applySnapshot(snapshot)
+    toast.success('Tarefa devolvida: o feedback foi enviado ao terminal do agente')
+    return true
+  }, [serviceOnline, applySnapshot])
+
   const completeWorkItem = useCallback(async (id: string, result?: string) => {
     if (!serviceOnline) { toast.error('Serviço local offline'); return }
     const res = await api.completeWorkItem(id, { result })
@@ -895,7 +921,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     runCommand, sendRawKey, resizeAgentSession, getRawOutput, subscribeRawOutput, clearTerminal, resetDemo, clearWorkspace,
     moveWorkItem, addWorkItem, addGoal, addProject, setActiveProject,
     checkCli, installCli, toggleCliApproved,
-    settings, allowedWorkspaces, updatePolicies, dispatchWorkItem, completeWorkItem,
+    settings, allowedWorkspaces, updatePolicies, dispatchWorkItem, completeWorkItem, approveWorkItem, rejectWorkItem,
     serviceOnline, realRuntimes, liveSessions, refreshService,
     startAgentSession, stopAgentSession, installCliReal,
     updateAgent, saveAgentMemory, clearAgentMemory, sendAgentMessage,

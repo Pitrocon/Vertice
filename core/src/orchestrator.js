@@ -578,7 +578,8 @@ async function autoCompleteTask(sessionId, workItemId, { reason, result }) {
  * do agente e envia o prompt da tarefa. Marca a tarefa e o agente, emite "task-updated".
  * Retorna { ok, sessionId } ou lanca WorkspaceError (403) / Error.
  */
-export async function dispatchWorkItem(workItemId) {
+// G5: `feedback` = tarefa devolvida pelo gestor; a correção vai junto da instrução, na mesma sessão real.
+export async function dispatchWorkItem(workItemId, { feedback } = {}) {
   const snapshot = getWorkspaceSnapshot()
   const item = snapshot.workItems.find((w) => w.id === workItemId)
   if (!item) throw new Error('Tarefa não encontrada.')
@@ -602,7 +603,8 @@ export async function dispatchWorkItem(workItemId) {
     : connectedHint
   syncAllMemoryFiles()
   const specText = item.description && item.description.trim() ? `Especificação da tarefa: ${item.description.trim()}` : ''
-  const instruction = [resumeNote, agent.prompt, `Tarefa: ${item.title}`, specText, runtimeId === 'powershell' ? '' : COMPLETION_INSTRUCTION]
+  const reviewText = feedback ? `Revisão do gestor (a entrega anterior foi devolvida): ${feedback} Corrija conforme essa revisão e entregue de novo.` : ''
+  const instruction = [resumeNote, agent.prompt, `Tarefa: ${item.title}`, specText, reviewText, runtimeId === 'powershell' ? '' : COMPLETION_INSTRUCTION]
     .filter(Boolean)
     .join(' ')
     .replace(/\s*[\r\n]+\s*/g, ' ')
@@ -620,9 +622,11 @@ export async function dispatchWorkItem(workItemId) {
   startTaskMonitor(sessionId, item.id, runtimeId, instruction)
   if (!writeToSession(sessionId, '\r')) { cancelTaskMonitor(sessionId); throw new Error(closedMessage) }
 
-  patchWorkItem(item.id, { status: 'doing' })
+  // Nova rodada: a entrega/erro anteriores deixam de valer (o gestor verá a nova saída na revisão).
+  patchWorkItem(item.id, { status: 'doing', result: null, error: null })
   patchAgent(agent.id, { status: 'working', task: item.title })
-  recordEvent(agent.id, `Tarefa despachada para sessão real: ${item.title}`, 'delegate')
+  recordEvent(agent.id, feedback ? `Tarefa devolvida com feedback do gestor: ${item.title}` : `Tarefa despachada para sessão real: ${item.title}`, 'delegate')
+  if (feedback && appendAgentMemory(agent.id, formatMemoryEntry({ title: `Devolvida pelo gestor: ${item.title}`, result: `Feedback: ${feedback}` }))) syncMemoryFile(agent.id)
 
   const updated = getWorkspaceSnapshot()
   broadcastFn({ type: 'task-updated', workItemId: item.id, snapshot: updated })
@@ -675,6 +679,17 @@ export async function completeWorkItem(workItemId, { result, error, auto = false
   // `auto` avisa o frontend que foi a IA (e não o usuário) quem concluiu: ele mostra um aviso.
   broadcastFn({ type: 'task-updated', workItemId, snapshot, ...(auto ? { auto: true, reason } : {}) })
   return { ok: true, status }
+}
+
+// G5: o gestor aprova a entrega revisada ("Aguardando aprovação" -> "Concluído").
+export function approveWorkItem(workItemId) {
+  const item = getWorkspaceSnapshot().workItems.find((w) => w.id === workItemId)
+  if (!item) return { ok: false, status: 404, error: 'Tarefa não encontrada.' }
+  if (item.status !== 'review') return { ok: false, status: 409, error: 'Só tarefas em "Aguardando aprovação" podem ser aprovadas.' }
+  patchWorkItem(item.id, { status: 'done' })
+  recordEvent(item.assigneeId ?? null, `Entrega aprovada pelo gestor: ${item.title}`, 'complete')
+  broadcastFn({ type: 'task-updated', workItemId: item.id, snapshot: getWorkspaceSnapshot() })
+  return { ok: true }
 }
 
 /** Tarefa excluída: para de observá-la e, se estava em andamento, libera o agente (se não houver outra). */
