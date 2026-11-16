@@ -1,6 +1,7 @@
-import { useState } from 'react'
-import { Download, FolderLock, Plug, PlugZap, RefreshCw } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Download, FolderLock, KeyRound, Plug, PlugZap, RefreshCw, X } from 'lucide-react'
 import { useWorkspace } from '@/store/workspace'
+import type { DetectedRuntime, InstallLog } from '@/lib/api'
 import type { CliStatus } from '@/types/agent'
 
 const cliStatusLabels: Record<CliStatus, string> = {
@@ -10,8 +11,15 @@ const cliStatusLabels: Record<CliStatus, string> = {
   installing: 'Instalando…',
 }
 
+// G3: o que a verificação de login consegue afirmar (só a existência da credencial, não a validade).
+const authLabels: Record<'found' | 'not-found' | 'unknown', { text: string; title: string }> = {
+  found: { text: 'Credencial encontrada', title: 'Há um login salvo desta CLI nesta máquina. Se ele tiver expirado, a CLI pede login de novo.' },
+  'not-found': { text: 'Login não encontrado', title: 'Nenhuma credencial nos locais conhecidos. Abra o terminal de login antes de usar esta CLI.' },
+  unknown: { text: 'Login: não dá para verificar daqui', title: 'O Vértice não sabe onde esta CLI guarda o login. Abra o terminal de login para conferir.' },
+}
+
 export function OrgPage() {
-  const { serviceOnline, realRuntimes, cliRuntimes, refreshService, terminalLines, liveSessions, settings, updatePolicies, toggleCliApproved, installCli } = useWorkspace()
+  const { serviceOnline, realRuntimes, cliRuntimes, refreshService, settings, updatePolicies, toggleCliApproved, installCli, installLogs, clearInstallLog, openLoginTerminal } = useWorkspace()
   const [checking, setChecking] = useState(false)
   const [installingId, setInstallingId] = useState<string | null>(null)
 
@@ -40,8 +48,10 @@ export function OrgPage() {
         version: runtime.version,
         status: runtime.status as CliStatus,
         install: runtime.install,
+        authenticates: Boolean(runtime.authenticates),
+        auth: runtime.auth ?? null,
       }))
-    : cliRuntimes.map((runtime) => ({ ...runtime, install: null as string | null }))
+    : cliRuntimes.map((runtime) => ({ ...runtime, install: null as string | null, authenticates: false, auth: null as DetectedRuntime['auth'] }))
 
   return (
     <div className="page">
@@ -70,7 +80,7 @@ export function OrgPage() {
       <section className="org-section">
         <div className="org-section__heading">
           <h2>Seletor de CLI</h2>
-          <p>Ao selecionar, o Vértice confere se a CLI está instalada na máquina. Se não estiver, a instalação é guiada pelo terminal embutido.</p>
+          <p>O Vértice confere se cada CLI está instalada nesta máquina e se há login salvo. Se não estiver instalada, "Instalar" roda o instalador oficial e mostra a saída ao vivo.</p>
         </div>
         <div className="cli-table">
           <div className="cli-row cli-row--head">
@@ -87,7 +97,12 @@ export function OrgPage() {
               <span className="cli-row__name"><strong>{cli.name}</strong></span>
               <span><code>{cli.command}</code></span>
               <span>{cli.kind}</span>
-              <span><span className={`cli-status cli-status--${cli.status}`}><i />{cliStatusLabels[cli.status]}</span></span>
+              <span className="cli-row__state">
+                <span className={`cli-status cli-status--${cli.status}`}><i />{cliStatusLabels[cli.status]}</span>
+                {cli.status === 'installed' && cli.auth && (
+                  <small className={`cli-auth cli-auth--${cli.auth}`} title={authLabels[cli.auth].title}>{authLabels[cli.auth].text}</small>
+                )}
+              </span>
               <span>{cli.version ?? '—'}</span>
               <span>
                 <input
@@ -106,28 +121,33 @@ export function OrgPage() {
                 )}
                 {cli.status === 'missing' && serviceOnline && !cli.install && <small className="cli-manual">manual</small>}
                 {cli.status === 'missing' && !serviceOnline && <small className="cli-manual">—</small>}
-                {cli.status === 'installed' && <span className="cli-ok">✓</span>}
+                {cli.status === 'installed' && serviceOnline && cli.authenticates ? (
+                  <button className="button button--secondary button--small" onClick={() => void openLoginTerminal(cli.id)} title="Abre uma janela do PowerShell com esta CLI para você fazer o login">
+                    <KeyRound size={13} /> Abrir terminal de login
+                  </button>
+                ) : cli.status === 'installed' && <span className="cli-ok">✓</span>}
               </span>
             </div>
           ))}
         </div>
         {serviceOnline && rows.some((cli) => cli.status === 'missing' && cli.install) && (
-          <p className="org-hint">Instalar abre um terminal PowerShell real e executa o comando de instalação. A saída aparece no terminal da página Organograma e fica registrada no histórico.</p>
+          <p className="org-hint">Instalar executa o comando oficial num PowerShell do serviço local, sem pedir senha de administrador. A saída aparece abaixo, ao vivo, e o resultado fica no histórico.</p>
         )}
       </section>
 
-      {Object.keys(liveSessions).some((key) => key.startsWith('install-')) && (
+      {Object.keys(installLogs).length > 0 && (
         <section className="org-section">
           <div className="org-section__heading">
-            <h2>Instalação em andamento</h2>
-            <p>Saída real do terminal de instalação.</p>
+            <h2>Instalação</h2>
+            <p>Saída real do instalador, transmitida pelo serviço local enquanto roda.</p>
           </div>
-          {Object.keys(liveSessions).filter((key) => key.startsWith('install-')).map((key) => (
-            <div key={key} className="install-log">
-              {(terminalLines[key] ?? []).slice(-12).map((line) => (
-                <div key={line.id} className={`terminal-line terminal-line--${line.type}`}>{line.text}</div>
-              ))}
-            </div>
+          {Object.entries(installLogs).map(([runtimeId, log]) => (
+            <InstallLogView
+              key={runtimeId}
+              name={rows.find((cli) => cli.id === runtimeId)?.name ?? runtimeId}
+              log={log}
+              onClose={() => clearInstallLog(runtimeId)}
+            />
           ))}
         </section>
       )}
@@ -161,6 +181,40 @@ export function OrgPage() {
           {!serviceOnline && <small className="org-hint">Conecte o serviço local para editar e salvar as políticas.</small>}
         </div>
       </section>
+    </div>
+  )
+}
+
+/** G3: log ao vivo de uma instalação, com tempo decorrido e rolagem automática para o fim. */
+function InstallLogView({ name, log, onClose }: { name: string; log: InstallLog; onClose: () => void }) {
+  const bodyRef = useRef<HTMLPreElement | null>(null)
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!log.running) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [log.running])
+
+  useEffect(() => {
+    const body = bodyRef.current
+    if (body) body.scrollTop = body.scrollHeight
+  }, [log.text])
+
+  const seconds = Math.max(0, Math.round((now - log.startedAt) / 1000))
+  const elapsed = seconds >= 60 ? `${Math.floor(seconds / 60)} min ${seconds % 60} s` : `${seconds} s`
+  const state = log.running ? `Instalando… ${elapsed}` : log.ok ? 'Concluída' : 'Falhou'
+
+  return (
+    <div className="install-log-card">
+      <header>
+        <strong>{name}</strong>
+        <span className={`install-log-card__state ${log.running ? 'is-running' : log.ok ? 'is-ok' : 'is-failed'}`}>
+          {log.running && <RefreshCw size={12} className="spin" />} {state}
+        </span>
+        {!log.running && <button className="icon-button icon-button--small" onClick={onClose} aria-label={`Fechar o log de ${name}`}><X size={13} /></button>}
+      </header>
+      <pre ref={bodyRef} className="install-log">{log.text.trim() || 'Aguardando a primeira saída do instalador…'}</pre>
     </div>
   )
 }

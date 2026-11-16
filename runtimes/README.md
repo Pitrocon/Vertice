@@ -19,6 +19,7 @@ editar código: reinicie o `vertice-core` e o runtime passa a ser detectado.
 | `install` | string\|null | não | Comando oficial de instalação (ou `null` se não aplicável). |
 | `http` | string\|null | não | URL de verificação para serviços locais (Ollama/LM Studio). |
 | `authenticates` | boolean | não | `true` se a CLI exige login antes de rodar (relevante para execução não interativa). |
+| `authCheck` | objeto\|null | não | Onde a CLI guarda o login: `{ "files": ["%USERPROFILE%\\..."], "env": ["VAR"] }`. A aba CLI's mostra "Credencial encontrada" se algum arquivo existir ou alguma variável estiver definida (não valida o token). Sem `authCheck`, o estado do login aparece como "não dá para verificar daqui". |
 | `order` | number | não | Ordem de exibição no catálogo (menor primeiro). Padrão: 999. |
 
 ## Observações

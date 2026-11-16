@@ -16,8 +16,8 @@ const MANIFESTS_DIR = process.env.VERTICE_RUNTIMES_DIR
 // estiver vazia (ex.: build empacotado antes de copiar os assets). Mantém a
 // detecção honesta funcionando em qualquer cenário.
 const FALLBACK_CATALOG = [
-  { id: 'claude',      name: 'Claude Code',     kind: 'CLI de IA',    command: 'claude',     versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @anthropic-ai/claude-code', http: null, authenticates: true,  order: 1 },
-  { id: 'codex',       name: 'Codex CLI',       kind: 'CLI de IA',    command: 'codex',      versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @openai/codex',          http: null, authenticates: true,  order: 2 },
+  { id: 'claude',      name: 'Claude Code',     kind: 'CLI de IA',    command: 'claude',     versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @anthropic-ai/claude-code', http: null, authenticates: true,  order: 1, authCheck: { files: ['%USERPROFILE%\\.claude\\.credentials.json'], env: ['ANTHROPIC_API_KEY'] } },
+  { id: 'codex',       name: 'Codex CLI',       kind: 'CLI de IA',    command: 'codex',      versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @openai/codex',          http: null, authenticates: true,  order: 2, authCheck: { files: ['%CODEX_HOME%\\auth.json', '%USERPROFILE%\\.codex\\auth.json'], env: [] } },
   { id: 'kimi',        name: 'Kimi CLI',        kind: 'CLI de IA',    command: 'kimi',       versionArgs: ['--version'], sessionArgs: [], install: 'irm https://code.kimi.com/install.ps1 | iex',  http: null, authenticates: true,  order: 3 },
   { id: 'glm',         name: 'GLM CLI (Z.ai)',  kind: 'CLI de IA',    command: 'zai',        versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @guizmo-ai/zai-cli',      http: null, authenticates: true,  order: 4 },
   { id: 'antigravity', name: 'Antigravity CLI', kind: 'CLI de IA',    command: 'agy',        versionArgs: ['--version'], sessionArgs: [], install: 'irm https://antigravity.google/cli/install.ps1 | iex', http: null, authenticates: true, order: 5 },
@@ -28,6 +28,16 @@ const FALLBACK_CATALOG = [
 ]
 
 const REQUIRED_FIELDS = ['id', 'name', 'kind', 'command', 'versionArgs', 'sessionArgs']
+
+// G3: `authCheck` opcional do manifesto: arquivos de credencial (com %VARIAVEL%) e variáveis de ambiente
+// que indicam login feito. Só confere se EXISTEM; não lê o conteúdo nem valida o token.
+function normalizeAuthCheck(value) {
+  if (!value || typeof value !== 'object') return null
+  const strings = (list) => (Array.isArray(list) ? list.filter((item) => typeof item === 'string' && item.trim()) : [])
+  const files = strings(value.files)
+  const env = strings(value.env)
+  return files.length || env.length ? { files, env } : null
+}
 
 // Lê e valida os manifestos declarativos. Entradas malformadas são ignoradas
 // com aviso; se nenhum manifesto válido for encontrado, usa o fallback embutido.
@@ -57,6 +67,7 @@ function loadCatalog() {
         install: manifest.install ?? null,
         http: manifest.http ?? null,
         authenticates: manifest.authenticates ?? false,
+        authCheck: normalizeAuthCheck(manifest.authCheck),
         order: typeof manifest.order === 'number' ? manifest.order : 999,
       })
     } catch (error) {
@@ -190,9 +201,36 @@ async function runDetection() {
       const match = versionOut.match(/\d+\.\d+(\.\d+)?/)
       version = match ? match[0] : versionOut.split('\n')[0].slice(0, 60)
     }
-    return { ...runtime, status: 'installed', version, path }
+    return { ...runtime, status: 'installed', version, path, auth: checkAuth(runtime) }
   }))
   return results
+}
+
+// Troca %VARIAVEL% pelo valor; se alguma não existir, o caminho não vale (null).
+function expandWindowsVars(value) {
+  let unresolved = false
+  const out = value.replace(/%([^%]+)%/g, (_match, name) => {
+    const resolved = process.env[name]
+    if (!resolved) unresolved = true
+    return resolved ?? ''
+  })
+  return unresolved ? null : out
+}
+
+/**
+ * G3: estado do login de uma CLI que exige autenticação.
+ *  - 'found': há credencial (arquivo do manifesto ou variável de ambiente). Não garante que ainda é válida.
+ *  - 'not-found': nada encontrado nos locais conhecidos.
+ *  - 'unknown': o manifesto não diz onde a CLI guarda o login.
+ *  - null: a CLI não exige login.
+ */
+export function checkAuth(runtime) {
+  if (!runtime.authenticates) return null
+  const check = runtime.authCheck
+  if (!check) return 'unknown'
+  if (check.env.some((name) => (process.env[name] ?? '').trim())) return 'found'
+  if (check.files.some((file) => { const path = expandWindowsVars(file); return Boolean(path && existsSync(path)) })) return 'found'
+  return 'not-found'
 }
 
 // Resolve o caminho executável real. `where` pode retornar shims sem extensão

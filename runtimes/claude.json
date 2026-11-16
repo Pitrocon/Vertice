@@ -8,5 +8,6 @@
   "install": "npm install -g @anthropic-ai/claude-code",
   "http": null,
   "authenticates": true,
+  "authCheck": { "files": ["%USERPROFILE%\\.claude\\.credentials.json"], "env": ["ANTHROPIC_API_KEY"] },
   "order": 1
 }

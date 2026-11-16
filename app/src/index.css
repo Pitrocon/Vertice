@@ -649,7 +649,18 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .cli-ok { color: var(--primitive-sage); font-weight: 600; }
 .cli-manual { color: var(--text-secondary); font-family: var(--font-mono); font-size: 8px; }
 .org-hint { margin-top: 10px; color: var(--text-secondary); font-size: 10px; line-height: 1.5; }
-.install-log { max-height: 220px; overflow-y: auto; padding: 12px 14px; border: 1px solid var(--border-subtle); border-radius: 7px; background: oklch(0.18 0.006 255); font-family: var(--font-mono); font-size: 10px; line-height: 1.6; }
+.install-log { max-height: 220px; overflow-y: auto; margin: 0; padding: 12px 14px; border: 1px solid var(--border-subtle); border-radius: 7px; background: oklch(0.18 0.006 255); font-family: var(--font-mono); font-size: 10px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.install-log-card { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.install-log-card header { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.install-log-card__state { display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); font-family: var(--font-mono); font-size: 10px; }
+.install-log-card__state.is-running { color: var(--accent-warm); }
+.install-log-card__state.is-ok { color: var(--primitive-sage); }
+.install-log-card__state.is-failed { color: var(--primitive-rust); }
+.install-log-card header .icon-button { margin-left: auto; }
+.cli-row__state { display: flex; flex-direction: column; gap: 3px; }
+.cli-auth { font-size: 9px; line-height: 1.3; color: var(--text-secondary); cursor: help; }
+.cli-auth--found { color: var(--primitive-sage); }
+.cli-auth--not-found { color: var(--accent-warm); }
 
 .work-card__result { margin: 8px 0 0; font-size: 10px; line-height: 1.45; color: var(--text-secondary); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 

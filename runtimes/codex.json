@@ -8,5 +8,6 @@
   "install": "npm install -g @openai/codex",
   "http": null,
   "authenticates": true,
+  "authCheck": { "files": ["%CODEX_HOME%\\auth.json", "%USERPROFILE%\\.codex\\auth.json"] },
   "order": 2
 }

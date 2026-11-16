@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
-import { api, connectEvents, stripAnsi, type DetectedRuntime, type LiveSessionInfo, type WorkspaceSnapshot, type VerticeSettings, type AllowedWorkspace, type PromptTemplate } from '@/lib/api'
+import { api, connectEvents, stripAnsi, type DetectedRuntime, type InstallLog, type LiveSessionInfo, type WorkspaceSnapshot, type VerticeSettings, type AllowedWorkspace, type PromptTemplate } from '@/lib/api'
 import {
   initialAgents, initialConnections, initialEvents, initialTerminalLines,
   initialGoals, initialWorkItems, initialProjects, initialCliRuntimes,
@@ -113,7 +113,10 @@ interface WorkspaceValue {
   refreshService: () => Promise<void>
   startAgentSession: (agentId: string) => Promise<void>
   stopAgentSession: (agentId: string) => Promise<void>
-  installCliReal: (runtimeId: string) => Promise<void>
+  /** G3: saída ao vivo das instalações de CLI, por runtime. */
+  installLogs: Record<string, InstallLog>
+  clearInstallLog: (runtimeId: string) => void
+  openLoginTerminal: (runtimeId: string) => Promise<void>
 }
 
 const WorkspaceContext = createContext<WorkspaceValue | null>(null)
@@ -156,6 +159,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [serviceOnline, setServiceOnline] = useState(false)
   const [realRuntimes, setRealRuntimes] = useState<DetectedRuntime[] | null>(null)
   const [liveSessions, setLiveSessions] = useState<Record<string, LiveSessionInfo>>({})
+  const [installLogs, setInstallLogs] = useState<Record<string, InstallLog>>({})
   const [settings, setSettings] = useState<VerticeSettings | null>(null)
   const [allowedWorkspaces, setAllowedWorkspaces] = useState<AllowedWorkspace[]>([])
   const wsRef = useRef<WebSocket | null>(null)
@@ -276,6 +280,23 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
             toast.success(finished ? `Tarefa concluída pela IA → Aguardando aprovação: ${finished.title}` : 'Tarefa concluída pela IA → Aguardando aprovação')
           }
           applySnapshot(snapshot)
+        } else if (event.type === 'install-output' && typeof event.runtimeId === 'string') {
+          // G3: saída ao vivo da instalação. "start" zera o log; "end" marca o fim (ok ou falha).
+          const runtimeId = event.runtimeId
+          const chunk = stripAnsi(String(event.data ?? '')).replace(/\r(?!\n)/g, '\n')
+          setInstallLogs((current) => {
+            const previous = event.phase === 'start' ? undefined : current[runtimeId]
+            const text = `${previous?.text ?? ''}${chunk}`.slice(-20000)
+            return {
+              ...current,
+              [runtimeId]: {
+                text,
+                running: event.phase === 'end' ? false : true,
+                ok: event.phase === 'end' ? event.ok === true : undefined,
+                startedAt: previous?.startedAt ?? Date.now(),
+              },
+            }
+          })
         } else if (event.type === 'exit' || event.type === 'session-ended') {
           setLiveSessions((current) => {
             const entry = Object.entries(current).find(([, session]) => session.id === event.sessionId)
@@ -640,7 +661,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const installCli = useCallback(async (id: string) => {
     if (serviceOnline) {
-      toast.info(`Instalando ${id}… Isso pode levar de 30 segundos a 2 minutos.`)
+      toast.info(`Instalando ${id}… acompanhe a saída ao vivo na aba CLI's.`)
       const res = await api.installRuntime(id)
       if (res.snapshot) {
         applySnapshot(res.snapshot)
@@ -689,21 +710,21 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }))
   }, [liveSessions])
 
-  const installCliReal = useCallback(async (runtimeId: string) => {
-    const target = realRuntimes?.find((item) => item.id === runtimeId)
-    if (!target?.install || !serviceOnline) return
-    const installAgentId = `install-${runtimeId}`
-    const session = await api.createSession({ agentId: installAgentId, runtimeId: 'powershell', cwd: '' })
-    if (!session) { toast.error('Não foi possível abrir o terminal de instalação'); return }
-    setLiveSessions((current) => ({ ...current, [installAgentId]: session }))
-    setTerminalLines((current) => ({
-      ...current, [installAgentId]: [
-        { id: crypto.randomUUID(), type: 'muted', text: `Instalando ${target.name} em um terminal real (PowerShell)…` },
-        { id: crypto.randomUUID(), type: 'command', text: target.install ?? '' },
-      ],
-    }))
-    await api.sendInput(session.id, `${target.install}\r`)
-  }, [realRuntimes, serviceOnline])
+  // G3: login da CLI numa janela própria do PowerShell; depois o usuário clica em "Verificar agora".
+  const openLoginTerminal = useCallback(async (runtimeId: string) => {
+    if (!serviceOnline) { toast.error('Serviço local offline — inicie o vertice-core'); return }
+    const res = await api.openLoginTerminal(runtimeId)
+    if (res.ok) toast.success('Terminal de login aberto numa janela do PowerShell. Faça o login lá e depois clique em "Verificar agora".')
+    else toast.error(res.error ?? 'Não foi possível abrir o terminal de login')
+  }, [serviceOnline])
+
+  const clearInstallLog = useCallback((runtimeId: string) => {
+    setInstallLogs((current) => {
+      const next = { ...current }
+      delete next[runtimeId]
+      return next
+    })
+  }, [])
 
   const toggleCliApproved = useCallback((id: string) => {
     setCliRuntimes((current) => current.map((cli) => (cli.id === id ? { ...cli, approved: !cli.approved } : cli)))
@@ -925,7 +946,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     checkCli, installCli, toggleCliApproved,
     settings, allowedWorkspaces, updatePolicies, dispatchWorkItem, completeWorkItem, approveWorkItem, rejectWorkItem,
     serviceOnline, realRuntimes, liveSessions, refreshService,
-    startAgentSession, stopAgentSession, installCliReal,
+    startAgentSession, stopAgentSession, installLogs, clearInstallLog, openLoginTerminal,
     updateAgent, saveAgentMemory, clearAgentMemory, sendAgentMessage,
     updateWorkItem, deleteWorkItem, updateGoal, deleteGoal, updateProject, deleteProject,
     promptTemplates, savePromptTemplate, deletePromptTemplate,

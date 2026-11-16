@@ -417,10 +417,11 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
   - **Handoff:** após `G1`.
   - **Concluído em 16/11/2026:** `POST /api/agents/:id/message`, turno de mensagem que apaga a linha e libera o destino, card de conexões e mensagem rápida no Inspector. Testado via HTTP e com o monitor; entrega real com CLI e UI não testadas.
 
-- [ ] **G3** (BACKEND → FRONT) — **Progresso ao vivo na instalação de CLIs + status de autenticação / login rápido** *(ver `tasks.md` 7.3)*:
+- [x] **G3** (BACKEND → FRONT) — **Progresso ao vivo na instalação de CLIs + status de autenticação / login rápido** *(ver `tasks.md` 7.3)*:
   - `BACKEND`: em `POST /api/runtimes/:id/install` (`core/src/index.js`), usar `spawn` em vez de `execFile` bufferizado para emitir eventos WebSocket (`install-output`) durante o download/instalação, mantendo download portátil do Node sem UAC e `syncUserCliPath()`. Adicionar verificação leve de status de login por runtime (ou comando `authCheck` nos manifestos `runtimes/*.json`).
   - `FRONT`: exibir a saída em tempo real na aba `CLI's` (`app/src/pages/Org.tsx`), remover o bloco legado/inconsistente de sessões `install-*` e adicionar botão **"Abrir terminal de login"** ao lado das CLIs instaladas que exigem autenticação.
   - **Aceite:** clicar em "Instalar" mostra log progressivo na tela sem parecer travado e o usuário sabe quais CLIs precisam de `/login`.
+  - **Concluído em 16/11/2026:** instalação via `spawn` com `install-output` ao vivo, `authCheck` nos manifestos de Claude e Codex (demais CLIs: "não dá para verificar daqui"), rota e botão "Abrir terminal de login", bloco `install-*` removido. Instalação e janela de login reais não testadas (o sandbox não roda PowerShell).
 
 - [x] **G4** (FRONT) — **Evitar despacho silencioso de tarefa sem responsável em `Work.tsx`** *(ver `tasks.md` 7.4)*:
   - Em `handleMove` (`app/src/pages/Work.tsx`), se o usuário tentar mover ou soltar em *Em andamento* (`doing`) uma tarefa sem `assigneeId`, interromper a movimentação silenciosa e exibir orientação para escolher um responsável (ou abrir o modal da tarefa focado no campo `Responsável`).

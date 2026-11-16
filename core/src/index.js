@@ -1,7 +1,8 @@
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
-import { execFile } from 'node:child_process'
+import { existsSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 import express from 'express'
@@ -75,6 +76,7 @@ app.post('/api/runtimes/:id/install', async (req, res) => {
   if (!runtime.install) {
     return res.status(400).json({ error: `Não há comando de instalação oficial para "${runtime.id}".` })
   }
+  if (installsInProgress.has(runtime.id)) return res.status(409).json({ error: `${runtime.name} já está sendo instalado` })
 
   // Ao clicar em Instalar na aba CLI's, aprova automaticamente o runtime caso ainda não esteja na lista.
   const approved = getSetting('approvedRuntimes') ?? []
@@ -88,6 +90,9 @@ app.post('/api/runtimes/:id/install', async (req, res) => {
   const needsNpm = /^\s*npm\s+/i.test(runtime.install)
   const psScript = [
     '$ErrorActionPreference = "Stop"',
+    // Saída em UTF-8 para o log ao vivo (o padrão do console é a página de código OEM e quebra acentos).
+    '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
+    '$ProgressPreference = "SilentlyContinue"',
     '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12',
     '$userNodeDir = Join-Path $env:LOCALAPPDATA "Programs\\nodejs"',
     '$userNpmDir = Join-Path $env:APPDATA "npm"',
@@ -95,6 +100,7 @@ app.post('/api/runtimes/:id/install', async (req, res) => {
     ...(needsNpm ? [
       'if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue) -and -not (Get-Command npm -ErrorAction SilentlyContinue)) {',
       '  $nodeVer = "v22.14.0"',
+      '  Write-Output "Node.js não encontrado: baixando a versão portátil $nodeVer (sem pedir permissão de administrador)..."',
       '  $zipPath = Join-Path $env:TEMP "node-$nodeVer-win-x64.zip"',
       '  $extractRoot = Join-Path $env:TEMP "node-extract-$nodeVer"',
       '  Invoke-WebRequest -Uri "https://nodejs.org/dist/$nodeVer/node-$nodeVer-win-x64.zip" -OutFile $zipPath -UseBasicParsing',
@@ -108,26 +114,29 @@ app.post('/api/runtimes/:id/install', async (req, res) => {
       '  New-Item -ItemType Directory -Force -Path $userNpmDir | Out-Null',
       '  $env:Path = "$userNodeDir;$userNpmDir;" + $env:Path',
       '  & "$userNodeDir\\npm.cmd" config set prefix $userNpmDir --location=user',
+      '  Write-Output "Node.js preparado em $userNodeDir"',
       '}',
       'if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue) -and -not (Get-Command npm -ErrorAction SilentlyContinue)) {',
       '  throw "Node.js (npm) não pôde ser preparado automaticamente no perfil do usuário."',
       '}',
     ] : []),
+    `Write-Output ${JSON.stringify(`Executando o instalador oficial de ${runtime.name} (pode ficar alguns minutos sem mostrar nada)...`)}`,
     runtime.install,
   ].join('; ')
 
   recordEvent('gerente', `Instalando ${runtime.name}…`, 'system')
+  installsInProgress.add(runtime.id)
+  broadcast({ type: 'install-output', runtimeId: runtime.id, phase: 'start', data: `$ ${runtime.install}\n` })
   try {
     // Executa APENAS o comando oficial do catalogo, via PowerShell (-ExecutionPolicy Bypass), sem input do usuario.
-    await new Promise((resolve, reject) => {
-      execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psScript], { timeout: 300000, windowsHide: true }, (error, stdout, stderr) => {
-        if (error) return reject(new Error((stderr || stdout || error.message || '').trim().slice(0, 300)))
-        resolve(stdout)
-      })
-    })
+    // G3: a saída vai ao vivo para a aba CLI's (evento WebSocket "install-output").
+    await runInstallScript(runtime.id, psScript)
   } catch (error) {
     recordEvent('gerente', `Falha ao instalar ${runtime.name}: ${error.message}`, 'system')
+    broadcast({ type: 'install-output', runtimeId: runtime.id, phase: 'end', ok: false, data: `\nFalha: ${error.message}\n` })
     return res.status(500).json({ error: `Falha ao instalar ${runtime.name}: ${error.message}` })
+  } finally {
+    installsInProgress.delete(runtime.id)
   }
 
   // Persiste os diretórios de CLIs no PATH do Usuário do Windows para funcionarem também no PowerShell externo.
@@ -136,8 +145,74 @@ app.post('/api/runtimes/:id/install', async (req, res) => {
   // Revalida a versao apos instalar.
   const detected = (await detectRuntimes({ force: true })).find((r) => r.id === runtime.id)
   recordEvent('gerente', `${runtime.name} instalado — versão ${detected?.version ?? 'desconhecida'}`, 'system')
+  broadcast({ type: 'install-output', runtimeId: runtime.id, phase: 'end', ok: true, data: `\n${runtime.name} instalado — versão ${detected?.version ?? 'desconhecida'}\n` })
   res.json({ runtime: detected, snapshot: broadcastSnapshot() })
 })
+
+// G3: abre uma janela própria do PowerShell (fora do Vértice) já rodando a CLI, para o usuário fazer o
+// login dela (ex.: /login). Só CLIs do catálogo que exigem login e estão instaladas; a pasta é a do
+// projeto ativo (ou a pasta pessoal, se não houver projeto). O Vértice não vê nem guarda a credencial.
+app.post('/api/runtimes/:id/login-terminal', async (req, res) => {
+  const runtime = RUNTIME_CATALOG.find((item) => item.id === req.params.id)
+  if (!runtime) return res.status(404).json({ error: 'Runtime não encontrado no catálogo' })
+  if (!runtime.authenticates) return res.status(400).json({ error: `${runtime.name} não precisa de login` })
+  const detected = (await detectRuntimes()).find((item) => item.id === runtime.id)
+  if (detected?.status !== 'installed' || !detected.path) return res.status(400).json({ error: `${runtime.name} não está instalado nesta máquina` })
+  const snapshot = getWorkspaceSnapshot()
+  const project = snapshot.projects.find((p) => p.active) ?? snapshot.projects[0]
+  const cwd = project?.path && existsSync(project.path) ? project.path : homedir()
+  const quote = (value) => `'${String(value).replace(/'/g, "''")}'`
+  const script = [
+    `$Host.UI.RawUI.WindowTitle = ${quote(`Vértice · login · ${runtime.name}`)}`,
+    `Write-Host ${quote(`Faça o login do ${runtime.name} nesta janela (em geral com /login). Quando terminar, feche a janela e clique em "Verificar agora" no Vértice.`)} -ForegroundColor Cyan`,
+    `& ${quote(detected.path)}`,
+  ].join('; ')
+  try {
+    // detached no Windows = a janela ganha console próprio e continua aberta mesmo se o Vértice fechar.
+    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', script], { cwd, detached: true, stdio: 'ignore' })
+    child.on('error', (error) => console.error('[vertice-core] falha ao abrir terminal de login:', error.message))
+    child.unref()
+  } catch (error) {
+    return res.status(500).json({ error: `Não foi possível abrir o terminal: ${error.message}` })
+  }
+  recordEvent('gerente', `Terminal de login aberto para ${runtime.name}`, 'system')
+  res.json({ ok: true, cwd })
+})
+
+// G3: roda o script de instalação transmitindo stdout/stderr pelo WebSocket. Rejeita com o final da
+// saída se o PowerShell terminar com erro, e encerra após 5 minutos.
+const INSTALL_TIMEOUT_MS = 300000
+const installsInProgress = new Set()
+function runInstallScript(runtimeId, psScript) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', psScript], { windowsHide: true })
+    let tail = ''
+    let settled = false
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (error) reject(error)
+      else resolvePromise()
+    }
+    const forward = (stream) => (chunk) => {
+      const data = chunk.toString('utf8')
+      tail = (tail + data).slice(-4000)
+      broadcast({ type: 'install-output', runtimeId, stream, data })
+    }
+    child.stdout.on('data', forward('stdout'))
+    child.stderr.on('data', forward('stderr'))
+    const timer = setTimeout(() => {
+      child.kill()
+      finish(new Error('a instalação passou de 5 minutos e foi interrompida'))
+    }, INSTALL_TIMEOUT_MS)
+    child.on('error', (error) => finish(error))
+    child.on('close', (code) => {
+      if (code === 0) return finish()
+      finish(new Error(tail.trim().slice(-300) || `o PowerShell terminou com código ${code}`))
+    })
+  })
+}
 
 // Só o carregamento inicial traz a última conversa de cada agente (até ~15 mil caracteres cada);
 // os broadcasts de snapshot a omitem para não reenviá-la a cada mutação.

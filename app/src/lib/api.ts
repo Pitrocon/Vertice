@@ -19,6 +19,21 @@ export interface DetectedRuntime {
   version: string | null
   path: string | null
   install: string | null
+  /** A CLI exige login antes de rodar. */
+  authenticates?: boolean
+  /**
+   * G3: "found" = credencial encontrada (não garante que ainda vale); "not-found" = nada nos locais
+   * conhecidos; "unknown" = não dá para verificar daqui; null/ausente = não exige login ou não instalada.
+   */
+  auth?: 'found' | 'not-found' | 'unknown' | null
+}
+
+/** G3: saída ao vivo de uma instalação de CLI (eventos "install-output" do core). */
+export interface InstallLog {
+  text: string
+  running: boolean
+  ok?: boolean
+  startedAt: number
 }
 
 export interface LiveSessionInfo {
@@ -261,6 +276,18 @@ export const api = {
       return data as { runtime: DetectedRuntime; snapshot: WorkspaceSnapshot }
     } catch {
       return { error: 'Serviço local indisponível durante a instalação.' }
+    }
+  },
+
+  // G3: abre uma janela do PowerShell (fora do app) rodando a CLI, para o usuário fazer o login dela.
+  async openLoginTerminal(runtimeId: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const res = await fetch(`${BASE}/api/runtimes/${encodeURIComponent(runtimeId)}/login-terminal`, { method: 'POST', headers: authHeaders() })
+      const data = await res.json().catch(() => null) as { error?: string } | null
+      if (!res.ok) return { ok: false, error: data?.error ?? `Falha ao abrir o terminal (HTTP ${res.status}).` }
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'Serviço local indisponível.' }
     }
   },
 
