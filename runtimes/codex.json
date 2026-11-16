@@ -9,5 +9,14 @@
   "http": null,
   "authenticates": true,
   "authCheck": { "files": ["%CODEX_HOME%\\auth.json", "%USERPROFILE%\\.codex\\auth.json"] },
+  "headless": {
+    "args": ["exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "-"],
+    "prompt": "stdin",
+    "output": "text",
+    "timeoutMs": 900000,
+    "sources": [
+      "https://learn.chatgpt.com/docs/non-interactive-mode"
+    ]
+  },
   "order": 2
 }

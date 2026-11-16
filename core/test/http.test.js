@@ -324,13 +324,24 @@ test('migração v6 -> v7 preserva dados, vincula ao projeto ativo/primeiro ou m
     raw.close()
   }
 
+  const legacyDirV7 = join(testDir, 'legacy-v7')
+  buildLegacyDb(legacyDirV7, 7)
+  {
+    const raw = new DatabaseSync(join(legacyDirV7, 'vertice.db'))
+    raw.prepare('INSERT INTO projects (id, name, path, description, active) VALUES (?, ?, ?, ?, ?)').run('p-v7', 'Projeto v7', join(testDir, 'pv7'), '', 1)
+    raw.prepare("INSERT INTO work_items (id, title, status, project_id) VALUES ('w-v7', 'Task v7', 'todo', 'p-v7')").run()
+    raw.close()
+  }
+
   try {
-    // Caso 0: migração completa v1 -> v7 mantém dados legados
+    // Caso 0: migração completa v1 -> v8 mantém dados legados
     process.env.VERTICE_DATA_DIR = legacyDirV1
     const modV1 = await import(`../src/db.js?caso=mig-v1-${Date.now()}`)
     const snapV1 = modV1.getWorkspaceSnapshot()
     assert.equal(snapV1.agents.length, 1)
     assert.equal(snapV1.workItems.length, 1)
+    assert.equal(snapV1.workItems[0].headless, false)
+    assert.equal(snapV1.workItems[0].ranMode, null)
     assert.equal(modV1.getAgentProjectId('a-v1'), 'p-v1')
     modV1.closeDatabase()
 
@@ -343,17 +354,32 @@ test('migração v6 -> v7 preserva dados, vincula ao projeto ativo/primeiro ou m
     assert.equal(snap1.connections[0].targetHandle, 'bottom')
     assert.equal(snap1.goals.length, 1)
     assert.equal(snap1.workItems[0].description, 'Spec')
+    assert.equal(snap1.workItems[0].headless, false)
+    assert.equal(snap1.workItems[0].ranMode, null)
     assert.equal(modActive.getAgentProjectId('a1'), 'p2')
     modActive.closeDatabase()
 
-    // Reexecução sobre v7 não altera nada
+    // Reexecução sobre v8 não altera nada
     const modActive2 = await import(`../src/db.js?caso=mig-idempotent-${Date.now()}`)
     assert.equal(modActive2.getAgentProjectId('a1'), 'p2')
     modActive2.closeDatabase()
 
     const checkRaw = new DatabaseSync(join(legacyDirActive, 'vertice.db'))
-    assert.equal(checkRaw.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get().value, '7')
+    assert.equal(checkRaw.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get().value, '8')
+    const workItemCols = checkRaw.prepare('PRAGMA table_info(work_items)').all().map((c) => c.name)
+    assert.ok(workItemCols.includes('headless'))
+    assert.ok(workItemCols.includes('ran_mode'))
     checkRaw.close()
+
+    // Caso 1b: migração v7 -> v8 preserva work_items existentes e adiciona headless / ran_mode
+    process.env.VERTICE_DATA_DIR = legacyDirV7
+    const modV7 = await import(`../src/db.js?caso=mig-v7-${Date.now()}`)
+    const snapV7 = modV7.getWorkspaceSnapshot()
+    assert.equal(snapV7.workItems.length, 1)
+    assert.equal(snapV7.workItems[0].id, 'w-v7')
+    assert.equal(snapV7.workItems[0].headless, false)
+    assert.equal(snapV7.workItems[0].ranMode, null)
+    modV7.closeDatabase()
 
     // Caso 2: sem projeto ativo, vincula ao primeiro cadastrado
     process.env.VERTICE_DATA_DIR = legacyDirFirst
@@ -372,5 +398,105 @@ test('migração v6 -> v7 preserva dados, vincula ao projeto ativo/primeiro ou m
     modEmpty.closeDatabase()
   } finally {
     process.env.VERTICE_DATA_DIR = prevDataDir
+  }
+})
+
+test('G9: catálogo/runtimes expõem headless, POST/PATCH persistem headless e dispatch recusa 403/400 sem execução', async () => {
+  const catalogRes = await api('GET', '/api/catalog')
+  assert.equal(catalogRes.status, 200)
+  const catalog = catalogRes.data.catalog
+  assert.equal(catalog.find((r) => r.id === 'claude').headless, true)
+  assert.equal(catalog.find((r) => r.id === 'codex').headless, true)
+  assert.ok(catalog.find((r) => r.id === 'claude').headlessSources.some((u) => u.startsWith('https://')))
+  assert.ok(catalog.find((r) => r.id === 'codex').headlessSources.some((u) => u.startsWith('https://')))
+  for (const id of ['kimi', 'glm', 'antigravity', 'opencode', 'ollama', 'lmstudio', 'powershell']) {
+    assert.equal(catalog.find((r) => r.id === id).headless, false)
+  }
+
+  const runtimesRes = await api('GET', '/api/runtimes')
+  assert.equal(runtimesRes.status, 200)
+  const runtimes = runtimesRes.data.runtimes
+  assert.equal(runtimes.find((r) => r.id === 'claude').headless, true)
+  assert.equal(runtimes.find((r) => r.id === 'codex').headless, true)
+  for (const id of ['kimi', 'glm', 'antigravity', 'opencode', 'ollama', 'lmstudio', 'powershell']) {
+    assert.equal(runtimes.find((r) => r.id === id).headless, false)
+  }
+
+  // Garante proj-a ativo (ag-a1 = Claude Code, ag-a2 = Codex CLI)
+  await api('POST', '/api/projects/proj-a/activate')
+
+  // POST e PATCH persistem headless: true (e recusam não booleano com 400)
+  const badCreate = await api('POST', '/api/work-items', { id: 'wi-bad', title: 'Bad', headless: 'sim' })
+  assert.equal(badCreate.status, 400)
+
+  const createdCodex = await api('POST', '/api/work-items', {
+    id: 'wi-headless-codex',
+    title: 'Tarefa Codex automática',
+    assigneeId: 'ag-a2',
+    headless: true,
+  })
+  assert.equal(createdCodex.status, 200)
+  assert.equal(createdCodex.data.workItems.find((w) => w.id === 'wi-headless-codex').headless, true)
+  assert.equal(createdCodex.data.workItems.find((w) => w.id === 'wi-headless-codex').ranMode, null)
+
+  const createdClaude = await api('POST', '/api/work-items', {
+    id: 'wi-headless-claude',
+    title: 'Tarefa Claude automática',
+    assigneeId: 'ag-a1',
+  })
+  assert.equal(createdClaude.status, 200)
+  assert.equal(createdClaude.data.workItems.find((w) => w.id === 'wi-headless-claude').headless, false)
+
+  const badPatch = await api('PATCH', '/api/work-items/wi-headless-claude', { headless: 1 })
+  assert.equal(badPatch.status, 400)
+
+  const patchedClaude = await api('PATCH', '/api/work-items/wi-headless-claude', { headless: true })
+  assert.equal(patchedClaude.status, 200)
+  assert.equal(patchedClaude.data.workItems.find((w) => w.id === 'wi-headless-claude').headless, true)
+
+  const snapCheck = await api('GET', '/api/workspace')
+  assert.equal(snapCheck.data.workItems.find((w) => w.id === 'wi-headless-codex').headless, true)
+  assert.equal(snapCheck.data.workItems.find((w) => w.id === 'wi-headless-claude').headless, true)
+
+  const settingsRes = await api('GET', '/api/settings')
+  const originalApproved = settingsRes.data.settings.approvedRuntimes
+  const prevAnthropicKey = process.env.ANTHROPIC_API_KEY
+
+  try {
+    // 403 quando codex é removido de approvedRuntimes
+    const withoutCodex = originalApproved.filter((id) => id !== 'codex')
+    assert.equal((await api('PATCH', '/api/settings', { approvedRuntimes: withoutCodex })).status, 200)
+    const deniedCodex = await api('POST', '/api/work-items/wi-headless-codex/dispatch')
+    assert.equal(deniedCodex.status, 403)
+
+    const afterCodexRefusal = await api('GET', '/api/workspace')
+    assert.equal(afterCodexRefusal.data.workItems.find((w) => w.id === 'wi-headless-codex').status, 'todo')
+    assert.equal(afterCodexRefusal.data.workItems.find((w) => w.id === 'wi-headless-codex').ranMode, null)
+
+    // 400 quando claude não tem credencial (sem ANTHROPIC_API_KEY nem .credentials.json no perfil temporário)
+    delete process.env.ANTHROPIC_API_KEY
+    const deniedClaude = await api('POST', '/api/work-items/wi-headless-claude/dispatch')
+    assert.equal(deniedClaude.status, 400)
+    assert.match(deniedClaude.data.error, /login/i)
+
+    const afterClaudeRefusal = await api('GET', '/api/workspace')
+    assert.equal(afterClaudeRefusal.data.workItems.find((w) => w.id === 'wi-headless-claude').status, 'todo')
+    assert.equal(afterClaudeRefusal.data.workItems.find((w) => w.id === 'wi-headless-claude').ranMode, null)
+
+    // 403 quando o workspace do projeto ativo não está autorizado em allowedWorkspaces
+    const projAPath = afterClaudeRefusal.data.projects.find((p) => p.id === 'proj-a').path
+    const wsEntry = afterClaudeRefusal.data.allowedWorkspaces.find((w) => w.path.toLowerCase() === projAPath.toLowerCase())
+    assert.ok(wsEntry)
+    assert.equal((await api('DELETE', `/api/settings/workspaces/${wsEntry.id}`)).status, 200)
+    try {
+      const deniedWorkspace = await api('POST', '/api/work-items/wi-headless-claude/dispatch')
+      assert.equal(deniedWorkspace.status, 403)
+    } finally {
+      await api('POST', '/api/settings/workspaces', { id: wsEntry.id, path: wsEntry.path })
+    }
+  } finally {
+    if (prevAnthropicKey === undefined) delete process.env.ANTHROPIC_API_KEY
+    else process.env.ANTHROPIC_API_KEY = prevAnthropicKey
+    await api('PATCH', '/api/settings', { approvedRuntimes: originalApproved })
   }
 })

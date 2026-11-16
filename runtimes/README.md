@@ -20,12 +20,44 @@ editar código: reinicie o `vertice-core` e o runtime passa a ser detectado.
 | `http` | string\|null | não | URL de verificação para serviços locais (Ollama/LM Studio). |
 | `authenticates` | boolean | não | `true` se a CLI exige login antes de rodar (relevante para execução não interativa). |
 | `authCheck` | objeto\|null | não | Onde a CLI guarda o login: `{ "files": ["%USERPROFILE%\\..."], "env": ["VAR"] }`. A aba CLI's mostra "Credencial encontrada" se algum arquivo existir ou alguma variável estiver definida (não valida o token). Sem `authCheck`, o estado do login aparece como "não dá para verificar daqui". |
+| `headless` | objeto\|null | não | Configuração opcional de execução não interativa estruturada (ver seção abaixo). Quando ausente ou inválido, o runtime permanece exclusivamente interativo. |
 | `order` | number | não | Ordem de exibição no catálogo (menor primeiro). Padrão: 999. |
+
+## Modo headless (opcional)
+
+O campo `headless` habilita a execução automática sem terminal para tarefas marcadas pelo gestor.
+
+| Subcampo | Tipo | Obrigatório | Regra de validação |
+|---|---|---|---|
+| `args` | string[] | sim | Lista de argumentos constantes (cada item deve ser uma string não vazia). |
+| `prompt` | `"stdin"` | sim | Deve ser exatamente `"stdin"`. |
+| `output` | `"claude-json" \| "text"` | sim | Formato esperado no `stdout`: objeto JSON do Claude (`result`) ou texto plano. |
+| `timeoutMs` | number | sim | Inteiro em milissegundos entre `60000` (1 min) e `3600000` (60 min). |
+| `sources` | string[] | sim | URLs da documentação oficial que embasam as flags; deve conter ao menos uma URL iniciando com `https://`. |
+
+### Regra de segurança: o prompt só vai por stdin
+
+**O prompt só vai por stdin — nunca nos `args` e nunca em linha de comando de shell.**
+No Windows, executáveis `.cmd` / `.bat` (como shims do `npm`) precisam ser iniciados via `cmd.exe /c`, onde metacaracteres como `&`, `|`, `>`, `^` e `%` em argumentos seriam interpretados pelo shell. Por isso, o esquema aceita exclusivamente `"prompt": "stdin"` e o validador (`validateHeadlessBlock`) descarta qualquer bloco fora desse contrato, mantendo os argumentos fixos e constantes no manifesto.
+
+### Decisões por runtime
+
+| Runtime | Possui `headless`? | Motivo |
+|---|---|---|
+| `claude` | Sim | Flags oficiais (`-p --output-format json --permission-mode acceptEdits`), saída JSON estruturada (`result`) e prompt por stdin confirmados; `acceptEdits` restringe aprovação automática a edições na pasta do projeto. |
+| `codex` | Sim | Subcomando oficial `exec --sandbox workspace-write --skip-git-repo-check -`, leitura de prompt por stdin (`-`), saída textual limpa em `stdout` e sandbox do SO confirmados. |
+| `kimi` | Não (interativo) | Embora documente `--print --final-message-only` com stdin, o `--print` ativa `--afk` e auto-aprova todas as chamadas de ferramenta sem gating técnico; no modo interativo o Kimi pede aprovação e o monitor aguarda o gestor. |
+| `glm` | Não (interativo) | Flag `--prompt` documentada apenas em README de projeto de terceiros (não oficial), sem documentação de formato de saída ou códigos de saída e sem suporte confirmado a stdin. |
+| `antigravity` | Não (interativo) | Prompt documentado apenas como argumento de linha de comando (não por stdin), ações sem aprovação são negadas silenciosamente com código de saída `0` e há relato de saída vazia fora de terminal real. |
+| `opencode` | Não (interativo) | `opencode run` documenta a mensagem como argumento de linha de comando (não por stdin) e não detalha formato JSON e códigos de saída nas páginas consultadas. |
+| `ollama`, `lmstudio`, `powershell` | Não (interativos) | Não são CLIs de agente com modo `print` estruturado. |
 
 ## Observações
 
 - Manifestos malformados (JSON inválido ou faltando campos obrigatórios) são
   ignorados com aviso no log; a detecção continua com os válidos.
+- Blocos `headless` inválidos são ignorados com aviso (`console.warn`) no boot,
+  sem derrubar o catálogo: o runtime continua disponível no modo interativo.
 - Se a pasta estiver ausente ou vazia, o `runtimes.js` usa um catálogo embutido
   de fallback para nunca quebrar a detecção.
 - A instalação só executa o comando oficial do campo `install`, nunca entrada

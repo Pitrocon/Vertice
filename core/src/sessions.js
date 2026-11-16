@@ -13,10 +13,10 @@ const sessions = new Map()
 
 // Ambiente filtrado repassado aos processos: remove variaveis internas do Vertice
 // para nao vazar segredos/config do core para dentro das CLIs.
-function buildChildEnv() {
-  const env = { ...process.env }
+export function buildChildEnv(extraEnv = {}) {
+  const env = { ...process.env, ...(extraEnv && typeof extraEnv === 'object' ? extraEnv : {}) }
   for (const key of Object.keys(env)) {
-    if (/^VERTICE_/i.test(key)) delete env[key]
+    if (/^VERTICE_/i.test(key) || env[key] === undefined) delete env[key]
   }
   return env
 }

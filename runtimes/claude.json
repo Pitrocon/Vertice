@@ -9,5 +9,15 @@
   "http": null,
   "authenticates": true,
   "authCheck": { "files": ["%USERPROFILE%\\.claude\\.credentials.json"], "env": ["ANTHROPIC_API_KEY"] },
+  "headless": {
+    "args": ["-p", "--output-format", "json", "--permission-mode", "acceptEdits"],
+    "prompt": "stdin",
+    "output": "claude-json",
+    "timeoutMs": 900000,
+    "sources": [
+      "https://code.claude.com/docs/en/headless",
+      "https://code.claude.com/docs/en/permission-modes"
+    ]
+  },
   "order": 1
 }

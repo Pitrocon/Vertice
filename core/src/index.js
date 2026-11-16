@@ -14,7 +14,7 @@ import { checkRequestOrigin, isFileOrigin, isLocalHost, isLocalOrigin, tokenFrom
 import {
   configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName, registerAgentSession, trackedBroadcast,
   syncMemoryFile, syncAllMemoryFiles, flushTranscripts, forgetAgentTranscript, forgetAllTranscripts, onWorkItemRemoved, sendAgentMessage, approveWorkItem, releaseDependents,
-  resetForProjectSwitch, baselineHandoffFiles,
+  resetForProjectSwitch, baselineHandoffFiles, stopHeadlessRuns,
 } from './orchestrator.js'
 import {
   listSessions, listEvents, recordEvent,
@@ -69,7 +69,14 @@ app.get('/api/runtimes', async (req, res) => {
 })
 
 app.get('/api/catalog', (_req, res) => {
-  res.json({ catalog: RUNTIME_CATALOG })
+  res.json({
+    catalog: RUNTIME_CATALOG.map((runtime) => ({
+      ...runtime,
+      headless: Boolean(runtime.headless),
+      headlessSources: runtime.headless?.sources ?? [],
+      sources: runtime.headless?.sources ?? [],
+    })),
+  })
 })
 
 app.post('/api/runtimes/:id/install', async (req, res) => {
@@ -560,6 +567,7 @@ app.patch('/api/agents/:id', (req, res) => {
 app.delete('/api/agents/:id', (req, res) => {
   const current = getAgent(req.params.id, { transcript: false })
   if (!current) return res.status(404).json({ error: 'Agente não encontrado' })
+  stopHeadlessRuns({ agentId: current.id, reason: 'Execução automática cancelada por remoção do agente' })
   for (const session of listActiveSessions()) {
     if (session.agentId === current.id && killSession(session.id)) broadcast({ type: 'session-ended', sessionId: session.id })
   }
@@ -749,8 +757,11 @@ function readDependencyFields(body, selfId, projectId = getActiveProjectId()) {
 app.post('/api/work-items', (req, res) => {
   const activeProjectId = getActiveProjectId()
   if (!activeProjectId) return res.status(409).json({ error: NO_ACTIVE_PROJECT_ERROR })
-  const { id, title, description, status, assigneeId, goalId, priority } = req.body ?? {}
+  const { id, title, description, status, assigneeId, goalId, priority, headless } = req.body ?? {}
   if (!title) return res.status(400).json({ error: 'title é obrigatório' })
+  if (headless !== undefined && typeof headless !== 'boolean') {
+    return res.status(400).json({ error: 'headless deve ser booleano' })
+  }
   if (assigneeId !== undefined && assigneeId !== null && assigneeId !== '') {
     if (!getAgent(assigneeId, { transcript: false }) || getAgentProjectId(assigneeId) !== activeProjectId) {
       return res.status(400).json({ error: 'Responsável não encontrado no projeto ativo' })
@@ -773,6 +784,7 @@ app.post('/api/work-items', (req, res) => {
     priority: priority ?? 'media',
     parentTaskId: deps.fields.parentTaskId ?? undefined,
     dependsOn: deps.fields.dependsOn ?? undefined,
+    headless: Boolean(headless),
     projectId: activeProjectId,
   })
   recordEvent(assigneeId ?? 'gerente', `Tarefa criada: ${title}`, 'create')
@@ -802,6 +814,10 @@ app.patch('/api/work-items/:id', (req, res) => {
   if (body.priority !== undefined) {
     if (!PRIORITIES.includes(body.priority)) return res.status(400).json({ error: 'priority inválida' })
     fields.priority = body.priority
+  }
+  if (body.headless !== undefined) {
+    if (typeof body.headless !== 'boolean') return res.status(400).json({ error: 'headless deve ser booleano' })
+    fields.headless = body.headless
   }
   if (body.assigneeId !== undefined) {
     fields.assigneeId = body.assigneeId || null
@@ -852,7 +868,8 @@ app.post('/api/work-items/:id/dispatch', async (req, res) => {
     res.json({ ...result, snapshot: getWorkspaceSnapshot() })
   } catch (error) {
     if (error instanceof WorkspaceError) return res.status(403).json({ error: error.message })
-    res.status(400).json({ error: error.message })
+    const status = Number.isInteger(error?.status) ? error.status : 400
+    res.status(status).json({ error: error.message })
   }
 })
 
@@ -887,7 +904,8 @@ app.post('/api/work-items/:id/reject', async (req, res) => {
     res.json(getWorkspaceSnapshot())
   } catch (error) {
     if (error instanceof WorkspaceError) return res.status(403).json({ error: error.message })
-    res.status(400).json({ error: error.message })
+    const status = Number.isInteger(error?.status) ? error.status : 400
+    res.status(status).json({ error: error.message })
   }
 })
 
@@ -1064,8 +1082,13 @@ export function startCore({ port = PORT } = {}) {
   })
 }
 
-// Grava a conversa pendente de cada agente antes de encerrar: o debounce de 2 s perderia o final dela.
+server.on('close', () => {
+  stopHeadlessRuns()
+})
+
+// Grava a conversa pendente de cada agente e encerra execuções headless ativas antes de sair.
 export function shutdownCore() {
+  stopHeadlessRuns()
   flushTranscripts()
 }
 

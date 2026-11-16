@@ -10,7 +10,7 @@ import type {
   Goal, WorkItem, Project, CliRuntime, WorkStatus, WorkPriority, ConnectionHandle,
 } from '@/types/agent'
 import type { NewAgentInput } from '@/components/AgentDialogs'
-import { reconcileTerminalLines } from '@/lib/workspace-helpers'
+import { reconcileTerminalLines, RUNTIME_NAME_TO_ID } from '@/lib/workspace-helpers'
 
 export type ModalName = 'create' | 'edit' | 'manager' | 'commands' | 'settings' | 'remove' | 'clear' | null
 
@@ -24,6 +24,8 @@ export interface WorkItemInput {
   goalId?: string
   /** G6: vazio remove as dependências; ausente não mexe. */
   dependsOn?: string[]
+  /** G9: executar automaticamente (sem terminal) quando o runtime do responsável suportar. */
+  headless?: boolean
 }
 
 function usePersistentState<T>(key: string, fallback: T) {
@@ -93,7 +95,7 @@ interface WorkspaceValue {
   resetDemo: () => void
   clearWorkspace: () => Promise<void>
   moveWorkItem: (id: string, status: WorkStatus) => void
-  addWorkItem: (input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority']; dependsOn?: string[] }) => void
+  addWorkItem: (input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority']; dependsOn?: string[]; headless?: boolean }) => void
   addGoal: (input: { title: string; description: string }) => void
   addProject: (input: { name: string; path: string; description: string; copyTeamFromProjectId?: string }) => Promise<boolean>
   setActiveProject: (id: string) => Promise<boolean>
@@ -133,11 +135,6 @@ const BOOT_RETRY_MS = 1500
 
 // Comandos internos do terminal do Vértice; nunca são repassados à sessão real.
 const RESERVED_COMMANDS = new Set(['/help', '/status', '/agents', '/create', '/delegate', '/clear'])
-
-const RUNTIME_NAME_TO_ID: Record<string, string> = {
-  'Claude Code': 'claude', 'Codex CLI': 'codex', 'Kimi CLI': 'kimi', 'GLM CLI': 'glm', 'GLM CLI (Z.ai)': 'glm', 'Antigravity CLI': 'antigravity',
-  OpenCode: 'opencode', Ollama: 'ollama', 'LM Studio': 'lmstudio', PowerShell: 'powershell',
-}
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [agents, setAgents] = usePersistentState<Agent[]>('vertice.agents', initialAgents)
@@ -629,7 +626,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (serviceOnline) void api.patchWorkItem(id, { status }).then(applySnapshot)
   }, [setWorkItems, serviceOnline, applySnapshot])
 
-  const addWorkItem = useCallback((input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority']; dependsOn?: string[] }) => {
+  const addWorkItem = useCallback((input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority']; dependsOn?: string[]; headless?: boolean }) => {
     const item: WorkItem = { id: crypto.randomUUID(), status: 'todo' as const, ...input }
     setWorkItems((current) => [...current, item])
     if (serviceOnline) void api.createWorkItem(item).then(applySnapshot)
@@ -776,8 +773,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const dispatchWorkItem = useCallback(async (id: string) => {
     if (!serviceOnline) { toast.error('Serviço local offline — inicie o vertice-core'); return }
     const res = await api.dispatchWorkItem(id)
-    if (res?.ok) { applySnapshot(res.snapshot); toast.success('Tarefa despachada para a sessão real do agente') }
-    else toast.error('Não foi possível despachar a tarefa (verifique responsável, runtime aprovado e workspace)')
+    if (res?.ok) {
+      applySnapshot(res.snapshot)
+      const dispatched = res.snapshot.workItems.find((item) => item.id === id)
+      toast.success(dispatched?.ranMode === 'headless' ? 'Tarefa iniciada em execução automática' : 'Tarefa despachada para a sessão real do agente')
+    } else toast.error('Não foi possível despachar a tarefa (verifique responsável, runtime aprovado e workspace)')
   }, [serviceOnline, applySnapshot])
 
   // G5: aprovar a entrega revisada ("Aguardando aprovação" -> "Concluído").

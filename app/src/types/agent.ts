@@ -77,6 +77,10 @@ export interface WorkItem {
   /** G6: ids das tarefas que precisam estar concluídas antes desta começar. */
   dependsOn?: string[]
   parentTaskId?: string
+  /** G9: executar automaticamente (sem terminal) quando o runtime do responsável suportar. */
+  headless?: boolean
+  /** G9: modo efetivo da última execução gravado no despacho. */
+  ranMode?: 'headless' | 'interactive' | null
   createdAt?: string
   updatedAt?: string
 }

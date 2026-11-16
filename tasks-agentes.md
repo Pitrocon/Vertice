@@ -454,9 +454,10 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
   - **Aceite:** usuário escolhe a pasta do projeto pelo explorador do Windows sem precisar digitar caminhos com `%USERPROFILE%`.
   - **Concluído em 16/11/2026:** IPC `vertice:pick-folder` (só a janela principal), `window.vertice.pickFolder` no preload e botão "Escolher pasta…" visível só no app desktop. Verificado por `node --check`/`tsc`/`eslint`; diálogo não testado no Electron.
 
-- [ ] **G9** (ORQ + BACKEND) — **Modo não-interativo / headless estruturado opcional (`B3` / `F1`)** *(ver `tasks.md` 7.9)*:
+- [x] **G9** (ORQ + BACKEND) — **Modo não-interativo / headless estruturado opcional (`B3` / `F1`)** *(ver `tasks.md` 7.9)*:
   - Pesquisar e validar flags oficiais não-interativas de cada CLI (`runtimes/*.json` + `core/src/runtimes.js`) e adicionar modo de execução estruturado em `core/src/orchestrator.js` (captura limpa via stdout/exit-code/JSON como alternativa à heurística de `4,5 s` de `core/src/task-monitor.js`).
   - **Aceite:** tarefas marcadas para execução automática concluem com saída limpa sem capturar moldura de TUI nem depender de silêncio por tempo.
+  - **Concluído em 16/11/2026:** `validateHeadlessBlock` e manifestos `claude.json`/`codex.json` (`prompt: "stdin"`; `kimi`, `glm`, `antigravity`, `opencode`, `ollama`, `lmstudio`, `powershell` permanecem interativos), migração v8 (`work_items.headless` / `ran_mode`), `core/src/headless.js` (`runHeadless` com teto 1 MB e `taskkill` no timeout), integração em `orchestrator.js`/`index.js`, opt-in e selos `Automático`/`Terminal` em `Work.tsx`. Validado com `headless.test.js` (9/9), `http.test.js` (7/7), `workspace.test.js` (13/13), `tsc -b` e `eslint`; sem execução com CLIs reais autenticadas.
 
 - [ ] **G10** (FRONT + BACKEND) — **Ergonomia do Terminal (`TerminalPanel.tsx` / `LiveTerminal.tsx`)** *(ver `tasks.md` 7.10)*:
   - Adicionar botões **"Copiar saída"**, **"Reiniciar sessão"** (encerra e reabre mantendo Memória Viva) e envio seguro de instruções multilinha (achatamento/bracketed paste sem disparar múltiplos Enters), além de clarificar ou unificar a barra inferior `<input>` quando `LiveTerminal` (`xterm.js`) estiver focado.

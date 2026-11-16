@@ -1,4 +1,31 @@
+import type { DetectedRuntime } from '@/lib/api'
 import type { Agent, TerminalLine } from '@/types/agent'
+
+/** Mapeamento entre o nome exibido do runtime no agente e o id do catálogo no core. */
+export const RUNTIME_NAME_TO_ID: Record<string, string> = {
+  'Claude Code': 'claude',
+  'Codex CLI': 'codex',
+  'Kimi CLI': 'kimi',
+  'GLM CLI': 'glm',
+  'GLM CLI (Z.ai)': 'glm',
+  'Antigravity CLI': 'antigravity',
+  OpenCode: 'opencode',
+  Ollama: 'ollama',
+  'LM Studio': 'lmstudio',
+  PowerShell: 'powershell',
+}
+
+/** Localiza o item correspondente em `runtimes` a partir do nome ou id configurado no agente. */
+export function findDetectedRuntime(runtimes: DetectedRuntime[] | null, agentRuntime?: string): DetectedRuntime | undefined {
+  if (!runtimes || !agentRuntime) return undefined
+  const mappedId = RUNTIME_NAME_TO_ID[agentRuntime]
+  const normalized = agentRuntime.trim().toLowerCase()
+  return runtimes.find((runtime) =>
+    (mappedId && runtime.id === mappedId)
+    || runtime.id.toLowerCase() === normalized
+    || runtime.name.toLowerCase() === normalized,
+  )
+}
 
 // Linhas da conversa anterior restauradas no terminal de cada agente ao reabrir o programa.
 export const MAX_RESTORED_LINES = 300

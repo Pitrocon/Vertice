@@ -26,6 +26,8 @@ export interface DetectedRuntime {
    * conhecidos; "unknown" = não dá para verificar daqui; null/ausente = não exige login ou não instalada.
    */
   auth?: 'found' | 'not-found' | 'unknown' | null
+  /** G9: o runtime suporta execução automática em segundo plano (sem terminal). */
+  headless?: boolean
 }
 
 /** G3: saída ao vivo de uma instalação de CLI (eventos "install-output" do core). */
@@ -237,7 +239,7 @@ export const api = {
   },
 
   // `assigneeId`/`goalId` vazios removem o responsável/a meta.
-  async updateWorkItem(id: string, fields: { title?: string; description?: string; status?: string; priority?: string; assigneeId?: string; goalId?: string; dependsOn?: string[] }): Promise<MutationResult> {
+  async updateWorkItem(id: string, fields: { title?: string; description?: string; status?: string; priority?: string; assigneeId?: string; goalId?: string; dependsOn?: string[]; headless?: boolean }): Promise<MutationResult> {
     return mutate('PATCH', `/api/work-items/${encodeURIComponent(id)}`, fields)
   },
 

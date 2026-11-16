@@ -16,18 +16,101 @@ const MANIFESTS_DIR = process.env.VERTICE_RUNTIMES_DIR
 // estiver vazia (ex.: build empacotado antes de copiar os assets). Mantém a
 // detecção honesta funcionando em qualquer cenário.
 const FALLBACK_CATALOG = [
-  { id: 'claude',      name: 'Claude Code',     kind: 'CLI de IA',    command: 'claude',     versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @anthropic-ai/claude-code', http: null, authenticates: true,  order: 1, authCheck: { files: ['%USERPROFILE%\\.claude\\.credentials.json'], env: ['ANTHROPIC_API_KEY'] } },
-  { id: 'codex',       name: 'Codex CLI',       kind: 'CLI de IA',    command: 'codex',      versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @openai/codex',          http: null, authenticates: true,  order: 2, authCheck: { files: ['%CODEX_HOME%\\auth.json', '%USERPROFILE%\\.codex\\auth.json'], env: [] } },
-  { id: 'kimi',        name: 'Kimi CLI',        kind: 'CLI de IA',    command: 'kimi',       versionArgs: ['--version'], sessionArgs: [], install: 'irm https://code.kimi.com/install.ps1 | iex',  http: null, authenticates: true,  order: 3 },
-  { id: 'glm',         name: 'GLM CLI (Z.ai)',  kind: 'CLI de IA',    command: 'zai',        versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @guizmo-ai/zai-cli',      http: null, authenticates: true,  order: 4 },
-  { id: 'antigravity', name: 'Antigravity CLI', kind: 'CLI de IA',    command: 'agy',        versionArgs: ['--version'], sessionArgs: [], install: 'irm https://antigravity.google/cli/install.ps1 | iex', http: null, authenticates: true, order: 5 },
-  { id: 'opencode',    name: 'OpenCode',        kind: 'CLI de IA',    command: 'opencode',   versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g opencode-ai',            http: null, authenticates: true,  order: 6 },
-  { id: 'ollama',      name: 'Ollama',          kind: 'Modelo local', command: 'ollama',     versionArgs: ['--version'], sessionArgs: [], install: 'winget install Ollama.Ollama --accept-source-agreements --accept-package-agreements',          http: 'http://localhost:11434/api/tags', authenticates: false, order: 7 },
-  { id: 'lmstudio',    name: 'LM Studio',       kind: 'Modelo local', command: 'lms',        versionArgs: ['version'],   sessionArgs: [], install: null,                                    http: 'http://localhost:1234/v1/models', authenticates: false, order: 8 },
-  { id: 'powershell',  name: 'PowerShell',      kind: 'Shell',        command: 'powershell', versionArgs: ['--version'], sessionArgs: ['-NoLogo'], install: null,                           http: null, authenticates: false, order: 9 },
+  {
+    id: 'claude',
+    name: 'Claude Code',
+    kind: 'CLI de IA',
+    command: 'claude',
+    versionArgs: ['--version'],
+    sessionArgs: [],
+    install: 'npm install -g @anthropic-ai/claude-code',
+    http: null,
+    authenticates: true,
+    order: 1,
+    authCheck: { files: ['%USERPROFILE%\\.claude\\.credentials.json'], env: ['ANTHROPIC_API_KEY'] },
+    headless: {
+      args: ['-p', '--output-format', 'json', '--permission-mode', 'acceptEdits'],
+      prompt: 'stdin',
+      output: 'claude-json',
+      timeoutMs: 900000,
+      sources: [
+        'https://code.claude.com/docs/en/headless',
+        'https://code.claude.com/docs/en/permission-modes',
+      ],
+    },
+  },
+  {
+    id: 'codex',
+    name: 'Codex CLI',
+    kind: 'CLI de IA',
+    command: 'codex',
+    versionArgs: ['--version'],
+    sessionArgs: [],
+    install: 'npm install -g @openai/codex',
+    http: null,
+    authenticates: true,
+    order: 2,
+    authCheck: { files: ['%CODEX_HOME%\\auth.json', '%USERPROFILE%\\.codex\\auth.json'], env: [] },
+    headless: {
+      args: ['exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-'],
+      prompt: 'stdin',
+      output: 'text',
+      timeoutMs: 900000,
+      sources: [
+        'https://learn.chatgpt.com/docs/non-interactive-mode',
+      ],
+    },
+  },
+  { id: 'kimi',        name: 'Kimi CLI',        kind: 'CLI de IA',    command: 'kimi',       versionArgs: ['--version'], sessionArgs: [], install: 'irm https://code.kimi.com/install.ps1 | iex',  http: null, authenticates: true,  order: 3, headless: null },
+  { id: 'glm',         name: 'GLM CLI (Z.ai)',  kind: 'CLI de IA',    command: 'zai',        versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @guizmo-ai/zai-cli',      http: null, authenticates: true,  order: 4, headless: null },
+  { id: 'antigravity', name: 'Antigravity CLI', kind: 'CLI de IA',    command: 'agy',        versionArgs: ['--version'], sessionArgs: [], install: 'irm https://antigravity.google/cli/install.ps1 | iex', http: null, authenticates: true, order: 5, headless: null },
+  { id: 'opencode',    name: 'OpenCode',        kind: 'CLI de IA',    command: 'opencode',   versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g opencode-ai',            http: null, authenticates: true,  order: 6, headless: null },
+  { id: 'ollama',      name: 'Ollama',          kind: 'Modelo local', command: 'ollama',     versionArgs: ['--version'], sessionArgs: [], install: 'winget install Ollama.Ollama --accept-source-agreements --accept-package-agreements',          http: 'http://localhost:11434/api/tags', authenticates: false, order: 7, headless: null },
+  { id: 'lmstudio',    name: 'LM Studio',       kind: 'Modelo local', command: 'lms',        versionArgs: ['version'],   sessionArgs: [], install: null,                                    http: 'http://localhost:1234/v1/models', authenticates: false, order: 8, headless: null },
+  { id: 'powershell',  name: 'PowerShell',      kind: 'Shell',        command: 'powershell', versionArgs: ['--version'], sessionArgs: ['-NoLogo'], install: null,                           http: null, authenticates: false, order: 9, headless: null },
 ]
 
 const REQUIRED_FIELDS = ['id', 'name', 'kind', 'command', 'versionArgs', 'sessionArgs']
+const HEADLESS_OUTPUT_FORMATS = new Set(['claude-json', 'text'])
+const HEADLESS_MIN_TIMEOUT_MS = 60_000
+const HEADLESS_MAX_TIMEOUT_MS = 3_600_000
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
+}
+
+/**
+ * G9: valida e normaliza o bloco opcional `headless` de um manifesto.
+ * Retorna `null` quando ausente ou inválido, sem emitir avisos diretos.
+ */
+export function validateHeadlessBlock(block) {
+  if (block == null) return null
+  if (!isPlainObject(block)) return null
+
+  if (!Array.isArray(block.args)) return null
+  if (!block.args.every((item) => typeof item === 'string' && item.trim().length > 0)) return null
+
+  if (block.prompt !== 'stdin') return null
+  if (!HEADLESS_OUTPUT_FORMATS.has(block.output)) return null
+
+  if (!Number.isInteger(block.timeoutMs) || block.timeoutMs < HEADLESS_MIN_TIMEOUT_MS || block.timeoutMs > HEADLESS_MAX_TIMEOUT_MS) {
+    return null
+  }
+
+  if (!Array.isArray(block.sources)) return null
+  if (!block.sources.every((item) => typeof item === 'string' && item.trim().length > 0)) return null
+  if (!block.sources.some((item) => item.startsWith('https://') && item.slice(8).trim().length > 0)) return null
+
+  return {
+    args: [...block.args],
+    prompt: 'stdin',
+    output: block.output,
+    timeoutMs: block.timeoutMs,
+    sources: [...block.sources],
+  }
+}
 
 // G3: `authCheck` opcional do manifesto: arquivos de credencial (com %VARIAVEL%) e variáveis de ambiente
 // que indicam login feito. Só confere se EXISTEM; não lê o conteúdo nem valida o token.
@@ -39,23 +122,37 @@ function normalizeAuthCheck(value) {
   return files.length || env.length ? { files, env } : null
 }
 
+function cloneFallbackCatalog() {
+  return FALLBACK_CATALOG.map((entry) => ({
+    ...entry,
+    versionArgs: [...entry.versionArgs],
+    sessionArgs: [...entry.sessionArgs],
+    authCheck: normalizeAuthCheck(entry.authCheck),
+    headless: validateHeadlessBlock(entry.headless),
+  }))
+}
+
 // Lê e valida os manifestos declarativos. Entradas malformadas são ignoradas
 // com aviso; se nenhum manifesto válido for encontrado, usa o fallback embutido.
-function loadCatalog() {
-  if (!existsSync(MANIFESTS_DIR)) {
-    console.warn(`[runtimes] Pasta de manifestos ausente (${MANIFESTS_DIR}); usando catálogo embutido.`)
-    return [...FALLBACK_CATALOG]
+export function loadCatalog(manifestsDir = MANIFESTS_DIR) {
+  if (!existsSync(manifestsDir)) {
+    console.warn(`[runtimes] Pasta de manifestos ausente (${manifestsDir}); usando catálogo embutido.`)
+    return cloneFallbackCatalog()
   }
 
-  const files = readdirSync(MANIFESTS_DIR).filter((f) => f.toLowerCase().endsWith('.json'))
+  const files = readdirSync(manifestsDir).filter((f) => f.toLowerCase().endsWith('.json'))
   const catalog = []
   for (const file of files) {
     try {
-      const manifest = JSON.parse(readFileSync(join(MANIFESTS_DIR, file), 'utf8'))
+      const manifest = JSON.parse(readFileSync(join(manifestsDir, file), 'utf8'))
       const missing = REQUIRED_FIELDS.filter((field) => manifest[field] === undefined || manifest[field] === null)
       if (missing.length) {
         console.warn(`[runtimes] Manifesto "${file}" ignorado — campos ausentes: ${missing.join(', ')}.`)
         continue
+      }
+      const headless = validateHeadlessBlock(manifest.headless)
+      if (manifest.headless != null && !headless) {
+        console.warn(`[runtimes] Bloco "headless" inválido no manifesto "${file}"; mantendo modo interativo.`)
       }
       catalog.push({
         id: manifest.id,
@@ -68,6 +165,7 @@ function loadCatalog() {
         http: manifest.http ?? null,
         authenticates: manifest.authenticates ?? false,
         authCheck: normalizeAuthCheck(manifest.authCheck),
+        headless,
         order: typeof manifest.order === 'number' ? manifest.order : 999,
       })
     } catch (error) {
@@ -77,7 +175,7 @@ function loadCatalog() {
 
   if (!catalog.length) {
     console.warn('[runtimes] Nenhum manifesto válido encontrado; usando catálogo embutido.')
-    return [...FALLBACK_CATALOG]
+    return cloneFallbackCatalog()
   }
 
   return catalog.sort((a, b) => a.order - b.order)
@@ -188,13 +286,14 @@ export async function detectRuntimes({ force = false } = {}) {
 
 async function runDetection() {
   const results = await Promise.all(RUNTIME_CATALOG.map(async (runtime) => {
+    const base = { ...runtime, headless: Boolean(runtime.headless) }
     const path = await where(runtime.command)
     if (!path) {
       // Modelos locais podem estar rodando como serviço mesmo sem CLI no PATH
       if (runtime.http && await httpCheck(runtime.http)) {
-        return { ...runtime, status: 'installed', version: null, path: null, via: 'http' }
+        return { ...base, status: 'installed', version: null, path: null, via: 'http' }
       }
-      return { ...runtime, status: 'missing', version: null, path: null }
+      return { ...base, status: 'missing', version: null, path: null }
     }
     let version = null
     const versionOut = await run(path, runtime.versionArgs)
@@ -202,7 +301,7 @@ async function runDetection() {
       const match = versionOut.match(/\d+\.\d+(\.\d+)?/)
       version = match ? match[0] : versionOut.split('\n')[0].slice(0, 60)
     }
-    return { ...runtime, status: 'installed', version, path, auth: checkAuth(runtime) }
+    return { ...base, status: 'installed', version, path, auth: checkAuth(runtime) }
   }))
   return results
 }

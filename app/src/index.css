@@ -556,8 +556,8 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .work-column__body { display: flex; flex-direction: column; gap: 9px; padding: 11px; min-height: 90px; }
 .work-column__empty { padding: 14px 6px; text-align: center; color: var(--text-secondary); font-size: 10px; }
 .work-card { padding: 11px 12px; border: 1px solid var(--border-subtle); border-radius: 5px; background: var(--surface-raised); }
-.work-card__top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.work-card__moves { display: flex; gap: 1px; }
+.work-card__top { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; }
+.work-card__moves { display: flex; flex: none; gap: 1px; }
 .work-card > strong { display: block; font-size: 11px; font-weight: 530; line-height: 1.45; }
 .work-card > footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
 .work-card__assignee { font-size: 10px; color: var(--accent); font-weight: 500; }
@@ -718,7 +718,7 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .work-card[draggable="true"]:hover { border-color: var(--border-strong); }
 .work-card[draggable="true"]:active { cursor: grabbing; }
 .work-card--dragging { opacity: .45; transform: scale(.98); border-style: dashed; border-color: var(--accent); }
-.work-card__grip { display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); cursor: grab; }
+.work-card__grip { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; color: var(--text-secondary); cursor: grab; }
 .work-card__desc {
   margin: 6px 0 0; font-size: 10px; line-height: 1.45; color: var(--text-secondary);
   white-space: pre-wrap; word-break: break-word;
@@ -729,3 +729,30 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .edge-editor__route { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 10px; }
 .edge-editor input { width: 200px; height: 28px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 4px; background: oklch(0.20 0.004 70); color: var(--text-primary); font-size: 11px; }
 .edge-editor input:focus { border-color: var(--accent); outline: 0; }
+
+/* ===== G9: execução automática opcional (selo e alternador no formulário) ===== */
+.mode-chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 3px;
+  font-family: var(--font-mono); font-size: 8px; letter-spacing: .06em;
+  border: 1px solid var(--border-subtle); color: var(--text-secondary);
+}
+.mode-chip--headless { color: var(--accent); border-color: oklch(0.66 0.15 245 / .4); background: oklch(0.66 0.15 245 / .08); }
+.mode-chip--interactive { color: var(--text-secondary); border-color: var(--border-strong); }
+.agent-form label.form-toggle {
+  grid-column: 1 / -1; flex-direction: row; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 4px; background: var(--surface); cursor: pointer;
+}
+.agent-form label.form-toggle > span { display: flex; flex-direction: column; gap: 2px; }
+.agent-form label.form-toggle strong { color: var(--text-primary); font-size: 11px; font-weight: 530; }
+.agent-form label.form-toggle small { color: var(--text-secondary); font-size: 9px; line-height: 1.4; }
+.agent-form label.form-toggle input[type="checkbox"] {
+  flex: none; appearance: none; width: 30px; height: 17px; margin: 0; padding: 2px;
+  border: 1px solid var(--border-strong); border-radius: 20px; background: var(--background);
+  cursor: pointer; transition: background 150ms ease, border-color 150ms ease;
+}
+.agent-form label.form-toggle input[type="checkbox"]::after {
+  content: ''; display: block; width: 11px; height: 11px; border-radius: 50%;
+  background: var(--text-secondary); transition: transform 150ms ease, background 150ms ease;
+}
+.agent-form label.form-toggle input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
+.agent-form label.form-toggle input[type="checkbox"]:checked::after { transform: translateX(13px); background: var(--background); }

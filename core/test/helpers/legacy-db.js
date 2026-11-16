@@ -8,12 +8,12 @@ const DEFAULT_POLICIES = { allowDestructiveCommands: false, allowNetwork: true, 
 
 /**
  * Cria um `vertice.db` em `dir` reproduzindo o schema exato de `core/src/db.js`
- * para a versão informada (`1` a `7`), incluindo `meta.schema_version`.
+ * para a versão informada (`1` a `8`), incluindo `meta.schema_version`.
  * Fecha a conexão antes de retornar o caminho do arquivo criado.
  */
 export function buildLegacyDb(dir, version) {
-  if (!Number.isInteger(version) || version < 1 || version > 7) {
-    throw new RangeError(`Versão legada inválida: ${version}. Use um inteiro entre 1 e 7.`)
+  if (!Number.isInteger(version) || version < 1 || version > 8) {
+    throw new RangeError(`Versão legada inválida: ${version}. Use um inteiro entre 1 e 8.`)
   }
   mkdirSync(dir, { recursive: true })
   const dbPath = join(dir, 'vertice.db')
@@ -140,6 +140,13 @@ export function buildLegacyDb(dir, version) {
           CREATE INDEX IF NOT EXISTS idx_${table}_project ON ${table}(project_id);
         `)
       }
+    }
+
+    if (version >= 8) {
+      legacyDb.exec(`
+        ALTER TABLE work_items ADD COLUMN headless INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE work_items ADD COLUMN ran_mode TEXT;
+      `)
     }
 
     legacyDb.prepare(`

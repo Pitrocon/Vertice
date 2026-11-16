@@ -132,7 +132,7 @@ db.exec(`
 // ---------------------------------------------------------------------------
 // Migracoes idempotentes baseadas em meta.schema_version. Nunca apagam dados.
 // ---------------------------------------------------------------------------
-const SCHEMA_VERSION = 7
+const SCHEMA_VERSION = 8
 
 function getSchemaVersion() {
   const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()
@@ -242,6 +242,16 @@ function runMigrations() {
       for (const table of ['agents', 'connections', 'goals', 'work_items']) {
         db.prepare(`UPDATE ${table} SET project_id = ? WHERE project_id IS NULL`).run(target.id)
       }
+    }
+  }
+
+  // v8 (G9) -> modo headless opcional por tarefa (headless) e modo efetivo da última execução (ran_mode).
+  if (current < 8) {
+    if (!columnExists('work_items', 'headless')) {
+      db.exec('ALTER TABLE work_items ADD COLUMN headless INTEGER NOT NULL DEFAULT 0')
+    }
+    if (!columnExists('work_items', 'ran_mode')) {
+      db.exec('ALTER TABLE work_items ADD COLUMN ran_mode TEXT')
     }
   }
 
@@ -418,6 +428,8 @@ function mapGoal(row) {
 function mapWorkItem(row) {
   return {
     id: row.id, title: row.title, status: row.status, priority: row.priority,
+    headless: Boolean(row.headless),
+    ranMode: row.ran_mode ?? null,
     ...(row.description ? { description: row.description } : {}),
     ...(row.assignee_id ? { assigneeId: row.assignee_id } : {}),
     ...(row.goal_id ? { goalId: row.goal_id } : {}),
@@ -959,27 +971,34 @@ export function createGoal({ id, title, description, projectId }) {
     .run(id, title, description ?? '', pid ?? null)
 }
 
-export function createWorkItem({ id, title, description, status, assigneeId, goalId, priority, parentTaskId, dependsOn, createdBy, projectId }) {
+export function createWorkItem({ id, title, description, status, assigneeId, goalId, priority, parentTaskId, dependsOn, createdBy, projectId, headless, ranMode }) {
   const now = new Date().toISOString()
   const pid = projectId !== undefined ? projectId : getActiveProjectId()
+  const normalizedRanMode = ranMode === 'headless' || ranMode === 'interactive' ? ranMode : null
   db.prepare(`
-    INSERT INTO work_items (id, title, description, status, assignee_id, goal_id, priority, parent_task_id, depends_on, created_by, created_at, updated_at, project_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO work_items (id, title, description, status, assignee_id, goal_id, priority, parent_task_id, depends_on, created_by, created_at, updated_at, project_id, headless, ran_mode)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id, title, description ?? '', status ?? 'todo', assigneeId ?? null, goalId ?? null, priority ?? 'media',
     parentTaskId ?? null,
     dependsOn ? JSON.stringify(dependsOn) : null,
-    createdBy ?? null, now, now, pid ?? null
+    createdBy ?? null, now, now, pid ?? null,
+    headless ? 1 : 0,
+    normalizedRanMode
   )
 }
 
-export function patchWorkItem(id, { status, assigneeId, goalId, priority, title, description, result, error, parentTaskId, dependsOn }) {
+export function patchWorkItem(id, { status, assigneeId, goalId, priority, title, description, result, error, parentTaskId, dependsOn, headless, ranMode }) {
   const current = db.prepare('SELECT * FROM work_items WHERE id = ?').get(id)
   if (!current) return false
+  const nextHeadless = headless !== undefined ? (headless ? 1 : 0) : (current.headless ? 1 : 0)
+  const nextRanMode = ranMode !== undefined
+    ? (ranMode === 'headless' || ranMode === 'interactive' ? ranMode : null)
+    : (current.ran_mode ?? null)
   db.prepare(`
     UPDATE work_items
     SET title = ?, description = ?, status = ?, assignee_id = ?, goal_id = ?, priority = ?, result = ?, error = ?,
-        parent_task_id = ?, depends_on = ?, updated_at = ?
+        parent_task_id = ?, depends_on = ?, headless = ?, ran_mode = ?, updated_at = ?
     WHERE id = ?
   `).run(
     title ?? current.title,
@@ -992,6 +1011,8 @@ export function patchWorkItem(id, { status, assigneeId, goalId, priority, title,
     error !== undefined ? error : current.error,
     parentTaskId !== undefined ? (parentTaskId || null) : current.parent_task_id,
     dependsOn !== undefined ? (dependsOn?.length ? JSON.stringify(dependsOn) : null) : current.depends_on,
+    nextHeadless,
+    nextRanMode,
     new Date().toISOString(),
     id
   )

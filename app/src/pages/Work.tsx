@@ -4,6 +4,7 @@ import { ArrowLeft, ArrowRight, CheckCircle2, FileText, GripVertical, Lock, Penc
 import { Modal } from '@/components/Modal'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { useWorkspace, type WorkItemInput } from '@/store/workspace'
+import { findDetectedRuntime } from '@/lib/workspace-helpers'
 import { priorityLabels, workStatusLabels, workStatusOrder, type Goal, type WorkItem, type WorkPriority, type WorkStatus } from '@/types/agent'
 
 type WorkModal =
@@ -26,6 +27,12 @@ const formatDateTime = (value?: string) => {
   if (!value) return ''
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
+}
+
+function executionModeLabel(ranMode?: WorkItem['ranMode']) {
+  if (ranMode === 'headless') return 'Automático'
+  if (ranMode === 'interactive') return 'Terminal'
+  return null
 }
 
 export function WorkPage() {
@@ -280,6 +287,7 @@ function WorkCard({ item, agentName, goalTitle, blockedBy = [], isDragging, onDr
   const resultPreview = (item.status === 'review' || item.status === 'done') && item.result ? summarizeResult(item.result) : ''
   const errorPreview = failed && item.error ? summarizeResult(item.error) : ''
   const reviewable = item.status === 'review' || item.status === 'done' || failed
+  const ranModeLabel = executionModeLabel(item.ranMode)
   return (
     <article
       className={`work-card ${isDragging ? 'work-card--dragging' : ''}`}
@@ -291,6 +299,14 @@ function WorkCard({ item, agentName, goalTitle, blockedBy = [], isDragging, onDr
         <span className="work-card__grip" title="Arraste para outra coluna">
           <GripVertical size={12} />
           <span className={`priority-chip priority-chip--${item.priority}`}>{priorityLabels[item.priority] ?? item.priority}</span>
+          {ranModeLabel && (
+            <span
+              className={`mode-chip mode-chip--${item.ranMode}`}
+              title={item.ranMode === 'headless' ? 'Executada automaticamente (sem terminal)' : 'Executada no terminal interativo'}
+            >
+              {ranModeLabel}
+            </span>
+          )}
         </span>
         <div className="work-card__moves">
           <button className="icon-button icon-button--small" onClick={onEdit} title="Editar tarefa" aria-label={`Editar a tarefa ${item.title}`}><Pencil size={12} /></button>
@@ -343,6 +359,7 @@ function ReviewDialog({ item, agentName, serviceOnline, onClose, onApprove, onRe
   const failed = item.status === 'failed'
   const pending = item.status === 'review' || failed
   const statusLabel = failed ? 'Falhou' : workStatusLabels[columnOf(item)]
+  const ranModeLabel = executionModeLabel(item.ranMode)
   const updated = formatDateTime(item.updatedAt)
 
   const approve = async () => {
@@ -366,6 +383,12 @@ function ReviewDialog({ item, agentName, serviceOnline, onClose, onApprove, onRe
         <dl className="review-meta">
           <div><dt>Responsável</dt><dd>{agentName ?? 'Sem responsável'}</dd></div>
           <div><dt>Status</dt><dd className={failed ? 'is-failed' : ''}>{statusLabel}</dd></div>
+          {ranModeLabel && (
+            <div>
+              <dt>Modo de execução</dt>
+              <dd><span className={`mode-chip mode-chip--${item.ranMode}`}>{ranModeLabel}</span></dd>
+            </div>
+          )}
           {updated && <div><dt>Atualizada</dt><dd>{updated}</dd></div>}
         </dl>
         {item.description && (
@@ -384,8 +407,12 @@ function ReviewDialog({ item, agentName, serviceOnline, onClose, onApprove, onRe
           <span className="section-label">ENTREGA DA IA</span>
           {item.result
             ? <pre className="review-output">{item.result}</pre>
-            : <p className="review-empty">Nenhuma saída registrada. Abra o terminal do agente para ver a conversa completa.</p>}
-          <small className="review-note">Texto capturado do terminal pela detecção automática de conclusão; pode faltar ou sobrar trecho da conversa.</small>
+            : <p className="review-empty">{item.ranMode === 'headless'
+              ? 'Nenhuma saída registrada pela execução automática.'
+              : 'Nenhuma saída registrada. Abra o terminal do agente para ver a conversa completa.'}</p>}
+          <small className="review-note">{item.ranMode === 'headless'
+            ? 'Resultado capturado diretamente da execução automática.'
+            : 'Texto capturado do terminal pela detecção automática de conclusão; pode faltar ou sobrar trecho da conversa.'}</small>
         </section>
         {writingFeedback && (
           <label className="review-feedback">
@@ -398,7 +425,7 @@ function ReviewDialog({ item, agentName, serviceOnline, onClose, onApprove, onRe
               onChange={(event) => setFeedback(event.target.value)}
               placeholder="Ex.: faltou a tabela de custos; refaça a seção 2 com os números de outubro."
             />
-            <small>Vai para o terminal real de {agentName ?? 'responsável'} junto com a tarefa, e a tarefa volta para "Em andamento".</small>
+            <small>Vai para {item.headless ? `${agentName ?? 'o responsável'}` : `o terminal real de ${agentName ?? 'responsável'}`} junto com a tarefa, e a tarefa volta para "Em andamento".</small>
           </label>
         )}
       </div>
@@ -430,11 +457,11 @@ function IssueDialog({ item, intent, onClose, onCreate, onSave, onStart }: {
   /** "start": aberto ao tentar pôr em andamento uma tarefa sem responsável (G4). */
   intent?: 'start'
   onClose: () => void
-  onCreate: (input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkPriority; dependsOn?: string[] }) => void
+  onCreate: (input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkPriority; dependsOn?: string[]; headless?: boolean }) => void
   onSave: (id: string, input: WorkItemInput) => Promise<boolean>
   onStart: (id: string) => void
 }) {
-  const { agents, goals, workItems } = useWorkspace()
+  const { agents, goals, workItems, realRuntimes } = useWorkspace()
   const [title, setTitle] = useState(item?.title ?? '')
   // G6: a interface edita uma dependência; outras gravadas pela API são mantidas.
   const [dependsOn, setDependsOn] = useState(item?.dependsOn?.[0] ?? '')
@@ -446,6 +473,10 @@ function IssueDialog({ item, intent, onClose, onCreate, onSave, onStart }: {
   const [goalId, setGoalId] = useState(item?.goalId ?? '')
   const [priority, setPriority] = useState<WorkPriority>(item?.priority ?? 'media')
   const [status, setStatus] = useState<WorkStatus>(item ? (intent === 'start' ? 'doing' : columnOf(item)) : 'todo')
+  const [headless, setHeadless] = useState(Boolean(item?.headless))
+  const selectedAgent = agents.find((agent) => agent.id === assigneeId)
+  const matchedRuntime = selectedAgent ? findDetectedRuntime(realRuntimes, selectedAgent.runtime) : undefined
+  const supportsHeadless = matchedRuntime?.headless === true
   const wantsStart = Boolean(item && status === 'doing' && columnOf(item) !== 'doing')
   const assigneeMissing = wantsStart && !assigneeId
   const [submitted, setSubmitted] = useState(false)
@@ -461,6 +492,7 @@ function IssueDialog({ item, intent, onClose, onCreate, onSave, onStart }: {
       assigneeId: assigneeId || undefined,
       goalId: goalId || undefined,
       priority,
+      ...(supportsHeadless ? { headless } : {}),
       ...(!item
         ? (dependsOn ? { dependsOn: [dependsOn] } : {})
         : dependsTouched ? { dependsOn: [...new Set([dependsOn, ...extraDependencies].filter(Boolean))] } : {}),
@@ -508,6 +540,15 @@ function IssueDialog({ item, intent, onClose, onCreate, onSave, onStart }: {
           </label>
           {item && (
             <label>Status<select value={status} onChange={(e) => setStatus(e.target.value as WorkStatus)}>{workStatusOrder.map((value) => <option key={value} value={value}>{workStatusLabels[value]}</option>)}</select></label>
+          )}
+          {supportsHeadless && (
+            <label className="form-toggle">
+              <span>
+                <strong>Executar automaticamente (sem terminal)</strong>
+                <small>O agente conclui a tarefa em segundo plano e envia a entrega direto para aprovação.</small>
+              </span>
+              <input type="checkbox" checked={headless} onChange={(e) => setHeadless(e.target.checked)} />
+            </label>
           )}
         </div>
         <label className="prompt-field">
