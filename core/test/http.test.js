@@ -2,6 +2,8 @@ import { testDir, cleanup } from './helpers/env.js'
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { request as httpRequest } from 'node:http'
+import { createServer as createNetServer } from 'node:net'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import fc from 'fast-check'
@@ -39,7 +41,9 @@ before(async () => {
 
 after(async () => {
   server.closeAllConnections?.()
-  await new Promise((resolve) => server.close(resolve))
+  if (server.listening) {
+    await new Promise((resolve) => server.close(resolve))
+  }
   closeDatabase()
   cleanup()
 })
@@ -754,4 +758,100 @@ test('G11: settings.policies ausente ou corrompido no SQLite faz getPolicies() r
     raw.close()
     setSetting('policies', originalPolicies)
   }
+})
+
+function rawHttpRequest({ method = 'GET', path = '/api/health', headers = {} }) {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: '127.0.0.1', port: 7899, method, path, headers }, (res) => {
+      let raw = ''
+      res.setEncoding('utf8')
+      res.on('data', (chunk) => { raw += chunk })
+      res.on('end', () => {
+        let data = raw
+        try { data = JSON.parse(raw) } catch { /* resposta não-JSON */ }
+        resolve({ status: res.statusCode, data })
+      })
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+test('G12: POST /api/orchestrator/delegate responde 404', async () => {
+  const res = await fetch(`${BASE}/api/orchestrator/delegate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ objective: 'Delegação removida' }),
+  })
+  assert.equal(res.status, 404)
+})
+
+test('G12: checagem de Origin e Host bloqueia origens externas, Host inválido e file:// sem token', async () => {
+  const evilOrigin = await rawHttpRequest({
+    headers: { Host: 'localhost:7899', Origin: 'https://evil.example' },
+  })
+  assert.equal(evilOrigin.status, 403)
+  assert.equal(evilOrigin.data.error, 'Origem não permitida.')
+
+  const evilHost = await rawHttpRequest({
+    headers: { Host: 'evil.example' },
+  })
+  assert.equal(evilHost.status, 403)
+  assert.equal(evilHost.data.error, 'Host não permitido.')
+
+  const prevToken = process.env.VERTICE_API_TOKEN
+  try {
+    delete process.env.VERTICE_API_TOKEN
+    const fileNoTokenEnv = await rawHttpRequest({
+      headers: { Host: 'localhost:7899', Origin: 'file://' },
+    })
+    assert.equal(fileNoTokenEnv.status, 403)
+    assert.equal(fileNoTokenEnv.data.error, 'Token do aplicativo ausente ou inválido.')
+
+    process.env.VERTICE_API_TOKEN = 'segredo-teste-vertice'
+    const fileMissingHeader = await rawHttpRequest({
+      headers: { Host: 'localhost:7899', Origin: 'file://' },
+    })
+    assert.equal(fileMissingHeader.status, 403)
+
+    const fileWithToken = await rawHttpRequest({
+      headers: { Host: 'localhost:7899', Origin: 'file://', 'X-Vertice-Token': 'segredo-teste-vertice' },
+    })
+    assert.equal(fileWithToken.status, 200)
+    assert.equal(fileWithToken.data.ok, true)
+  } finally {
+    if (prevToken === undefined) delete process.env.VERTICE_API_TOKEN
+    else process.env.VERTICE_API_TOKEN = prevToken
+  }
+})
+
+test('G12: startCore rejeita com EADDRINUSE quando a porta 7899 já está ocupada sem executar recordEvent', async () => {
+  server.closeAllConnections?.()
+  if (server.listening) {
+    await new Promise((resolve) => server.close(resolve))
+  }
+
+  const blocker = createNetServer()
+  await new Promise((resolve, reject) => {
+    blocker.once('error', reject)
+    blocker.listen(7899, resolve)
+  })
+
+  const beforeLastEventId = listEvents()[0]?.id ?? 0
+  try {
+    await assert.rejects(
+      () => startCore({ port: 7899 }),
+      (error) => error?.code === 'EADDRINUSE',
+    )
+    const newEvents = listEvents().filter((e) => e.id > beforeLastEventId)
+    assert.equal(newEvents.some((e) => e.message.includes('Serviço local do Vértice iniciado')), false)
+  } finally {
+    await new Promise((resolve) => blocker.close(resolve))
+  }
+
+  await startCore({ port: 7899 })
+  assert.equal(server.listening, true)
+  const res = await rawHttpRequest({ headers: { Host: 'localhost:7899' } })
+  assert.equal(res.status, 200)
+  assert.equal(res.data.ok, true)
 })

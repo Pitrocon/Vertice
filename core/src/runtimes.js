@@ -268,36 +268,74 @@ export const EXTRA_BIN_DIRS = [
   join(homedir(), '.local', 'bin'),
 ].filter(Boolean)
 
+function normalizePathEntry(value) {
+  return String(value ?? '').trim().replace(/[\\/]+$/, '').toLowerCase()
+}
+
+/**
+ * Calcula quais diretórios extras existem e devem ser adicionados ao PATH do processo atual.
+ */
+export function planUserPathSync(extraDirs = EXTRA_BIN_DIRS, currentPath = '', exists = existsSync) {
+  const seen = new Set()
+  const existingDirs = []
+  for (const dir of Array.isArray(extraDirs) ? extraDirs : []) {
+    if (typeof dir !== 'string' || !dir.trim()) continue
+    const norm = normalizePathEntry(dir)
+    if (!norm || seen.has(norm)) continue
+    seen.add(norm)
+    if (exists(dir)) existingDirs.push(dir)
+  }
+
+  const basePath = String(currentPath ?? '')
+  const normalizedCurrent = new Set(basePath.split(';').map(normalizePathEntry).filter(Boolean))
+  const toAdd = existingDirs.filter((dir) => !normalizedCurrent.has(normalizePathEntry(dir)))
+  const trimmedBase = basePath.replace(/;+$/, '')
+  const nextPath = toAdd.length
+    ? (trimmedBase ? `${trimmedBase};${toAdd.join(';')}` : toAdd.join(';'))
+    : basePath
+
+  return { existingDirs, toAdd, nextPath }
+}
+
+/**
+ * Gera o script PowerShell para persistir diretórios no PATH do Usuário do Windows.
+ */
+export function buildPersistScript(dirs) {
+  const validDirs = Array.isArray(dirs) ? dirs.filter((d) => typeof d === 'string' && d.trim()) : []
+  if (!validDirs.length) return ''
+  const dirsLiteral = validDirs.map((d) => `'${d.replace(/'/g, "''")}'`).join(',')
+  return [
+    `$dirs = @(${dirsLiteral})`,
+    '$userPath = [Environment]::GetEnvironmentVariable("Path", "User")',
+    'if (-not $userPath) { $userPath = "" }',
+    '$parts = $userPath -split ";" | Where-Object { $_.Trim() -ne "" }',
+    '$changed = $false',
+    'foreach ($d in $dirs) {',
+    '  if ((Test-Path $d) -and -not ($parts | Where-Object { $_.TrimEnd("\\").ToLower() -eq $d.TrimEnd("\\").ToLower() })) {',
+    '    $parts += $d',
+    '    $changed = $true',
+    '  }',
+    '}',
+    'if ($changed) { [Environment]::SetEnvironmentVariable("Path", ($parts -join ";"), "User") }',
+  ].join('; ')
+}
+
 // Garante que as pastas de CLIs instaladas para o usuário façam parte tanto do PATH atual do Vértice
 // quanto do PATH persistente do Usuário no Windows (para funcionarem também no PowerShell/CMD fora do app).
 export function syncUserCliPath() {
   if (process.env.VERTICE_SKIP_PATH_SYNC === '1') return
-  const existingDirs = EXTRA_BIN_DIRS.filter((dir) => existsSync(dir))
-  if (!existingDirs.length) return
   const currentPath = process.env.Path || process.env.PATH || ''
-  const lowerCurrent = currentPath.split(';').map((p) => p.trim().toLowerCase())
-  const toAddInProcess = existingDirs.filter((dir) => !lowerCurrent.includes(dir.toLowerCase()))
-  if (toAddInProcess.length) {
-    process.env.Path = `${currentPath};${toAddInProcess.join(';')}`
-    process.env.PATH = process.env.Path
+  const plan = planUserPathSync(EXTRA_BIN_DIRS, currentPath, existsSync)
+  if (!plan.existingDirs.length) return
+  if (plan.toAdd.length) {
+    process.env.Path = plan.nextPath
+    process.env.PATH = plan.nextPath
   }
   if (process.platform === 'win32') {
-    const dirsLiteral = existingDirs.map((d) => `'${d.replace(/'/g, "''")}'`).join(',')
-    const ps = [
-      `$dirs = @(${dirsLiteral})`,
-      '$userPath = [Environment]::GetEnvironmentVariable("Path", "User")',
-      'if (-not $userPath) { $userPath = "" }',
-      '$parts = $userPath -split ";" | Where-Object { $_.Trim() -ne "" }',
-      '$changed = $false',
-      'foreach ($d in $dirs) {',
-      '  if ((Test-Path $d) -and -not ($parts | Where-Object { $_.TrimEnd("\\").ToLower() -eq $d.TrimEnd("\\").ToLower() })) {',
-      '    $parts += $d',
-      '    $changed = $true',
-      '  }',
-      '}',
-      'if ($changed) { [Environment]::SetEnvironmentVariable("Path", ($parts -join ";"), "User") }',
-    ].join('; ')
-    execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps], { timeout: 10000, windowsHide: true }, () => {})
+    const ps = buildPersistScript(plan.existingDirs)
+    if (ps) {
+      execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps], { timeout: 10000, windowsHide: true }, () => {})
+    }
   }
 }
 

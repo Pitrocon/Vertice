@@ -13,7 +13,7 @@ import type { NewAgentInput } from '@/components/AgentDialogs'
 import { formatTextForSession } from '@/lib/terminal-input'
 import { reconcileTerminalLines, RUNTIME_NAME_TO_ID } from '@/lib/workspace-helpers'
 
-export type ModalName = 'create' | 'edit' | 'manager' | 'commands' | 'settings' | 'remove' | 'clear' | null
+export type ModalName = 'create' | 'edit' | 'commands' | 'settings' | 'remove' | 'clear' | null
 
 export interface WorkItemInput {
   title: string
@@ -71,7 +71,6 @@ interface WorkspaceValue {
   updateConnectionLabel: (id: string, label: string) => Promise<boolean>
   removeConnection: (id: string) => void
   createAgent: (input: NewAgentInput) => void
-  delegateToManager: (objective: string) => void
   togglePause: (id: string) => void
   removeAgent: (id: string) => Promise<void>
   updateAgent: (id: string, input: NewAgentInput) => Promise<boolean>
@@ -136,7 +135,7 @@ const BOOT_RETRY_ATTEMPTS = 40
 const BOOT_RETRY_MS = 1500
 
 // Comandos internos do terminal do Vértice; nunca são repassados à sessão real.
-const RESERVED_COMMANDS = new Set(['/help', '/status', '/agents', '/create', '/delegate', '/clear'])
+const RESERVED_COMMANDS = new Set(['/help', '/status', '/agents', '/create', '/clear'])
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [agents, setAgents] = usePersistentState<Agent[]>('vertice.agents', initialAgents)
@@ -399,92 +398,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     toast.success(isPrincipal ? `${input.name} criado como agente principal` : `${input.name} adicionado à equipe`)
   }, [agents, setAgents, setConnections, addEvent, serviceOnline, applySnapshot])
 
-  const delegateToManager = useCallback((objective: string) => {
-    const stamp = Date.now().toString(36)
-    const existingManager = agents.find((agent) => agent.kind === 'manager') ?? agents[0]
-    // Workspace do zero (sem agentes): o Gerente padrão é criado junto (no core, ao delegar online).
-    const manager: Agent = existingManager ?? {
-      id: 'gerente', name: 'Gerente', role: 'Orquestrador principal', kind: 'manager',
-      runtime: 'Claude Code', model: 'claude-sonnet', status: 'idle', task: 'Aguardando objetivo', progress: 0,
-      prompt: 'Coordene a equipe, divida objetivos em tarefas e crie especialistas quando necessário.', x: 280, y: 0,
-    }
-    const existingNames = new Set(agents.map((agent) => agent.name))
-    const uniqueName = (base: string) => {
-      if (!existingNames.has(base)) return base
-      let index = 2
-      while (existingNames.has(`${base} ${index}`)) index += 1
-      return `${base} ${index}`
-    }
-    const templates = [
-      { name: 'Estrategista', role: 'Estratégia e decomposição', runtime: 'Claude Code', model: 'claude-sonnet', task: 'Decompondo o objetivo em entregas', prompt: `Decomponha este objetivo em entregas coordenáveis: ${objective}` },
-      { name: 'Analista', role: 'Análise e contexto', runtime: 'Kimi CLI', model: 'kimi-k2', task: 'Analisando contexto e restrições', prompt: `Analise contexto, dados e restrições para: ${objective}` },
-      { name: 'Executor', role: 'Execução da entrega', runtime: 'Codex CLI', model: 'gpt-codex', task: 'Preparando o plano de execução', prompt: `Execute a entrega principal e reporte o resultado para: ${objective}` },
-    ]
-    const startIndex = agents.filter((agent) => agent.kind === 'worker').length
-    const newAgents: Agent[] = templates.map((template, index) => ({
-      ...template, id: `${template.name.toLowerCase()}-${stamp}-${index}`, name: uniqueName(template.name), kind: 'worker' as const,
-      status: index === 0 ? 'working' as const : 'queued' as const, progress: index === 0 ? 8 : 0,
-      x: 30 + ((startIndex + index) % 3) * 315, y: 570 + Math.floor((startIndex + index) / 3) * 195, createdBy: manager.id,
-    }))
-    const newConnections: AgentConnection[] = newAgents.map((agent) => ({
-      id: crypto.randomUUID(), source: manager.id, target: agent.id, label: 'delega', active: agent.status === 'working',
-    }))
-
-    if (serviceOnline) {
-      // ONLINE: orquestração REAL. O core cria subagentes + conexões + tarefas
-      // reais (validando runtime aprovado e limite). As sessões só iniciam quando
-      // cada tarefa é despachada no Work — por isso a mensagem é honesta.
-      void api.orchestratorDelegate({
-        managerId: manager.id,
-        objective,
-        team: templates.map((template) => ({
-          name: uniqueName(template.name), role: template.role,
-          runtime: template.runtime, model: template.model, prompt: template.prompt,
-        })),
-      }).then((res) => {
-        if (!res || !res.ok) {
-          setTerminalLines((current) => ({
-            ...current, [manager.id]: [...(current[manager.id] ?? []),
-              { id: crypto.randomUUID(), type: 'command', text: `vertice delegate "${objective}"` },
-              { id: crypto.randomUUID(), type: 'muted', text: 'Falha ao delegar: verifique runtimes aprovados e o limite de agentes nas CLIs.' },
-            ],
-          }))
-          toast.error('Não foi possível criar a equipe (ver aprovações de CLI)')
-          return
-        }
-        applySnapshot(res.snapshot)
-        setTerminalLines((current) => ({
-          ...current, [manager.id]: [...(current[manager.id] ?? []),
-            { id: crypto.randomUUID(), type: 'command', text: `vertice delegate "${objective}"` },
-            { id: crypto.randomUUID(), type: 'success', text: `✓ ${res.created.length} subagente(s) real(is) criado(s) e registrado(s) no workspace.` },
-            { id: crypto.randomUUID(), type: 'muted', text: 'As sessões iniciam ao despachar cada tarefa no quadro Work.' },
-          ],
-        }))
-        addEvent(manager.id, `Gerente criou ${res.created.length} subagente(s) real(is) para: ${objective}`, 'delegate')
-        toast.success(`Gerente criou ${res.created.length} subagente(s) real(is)`)
-      })
-    } else {
-      // OFFLINE: demonstração visual, claramente rotulada como simulação.
-      setAgents((currentAgents) => [
-        ...(existingManager ? currentAgents : [manager, ...currentAgents]).map((agent) => agent.id === manager.id ? { ...agent, status: 'working' as const, task: objective, progress: 12 } : agent),
-        ...newAgents,
-      ])
-      setConnections((current) => [...current, ...newConnections])
-      setTerminalLines((current) => ({
-        ...current, [manager.id]: [...(current[manager.id] ?? []),
-          { id: crypto.randomUUID(), type: 'command', text: `vertice delegate "${objective}"` },
-          { id: crypto.randomUUID(), type: 'success', text: `✓ Equipe simulada criada: ${newAgents.map((agent) => agent.name).join(', ')}` },
-          { id: crypto.randomUUID(), type: 'muted', text: 'Demonstração offline · nenhum processo externo foi iniciado. Inicie o vertice-core para orquestração real.' },
-        ],
-      }))
-      addEvent(manager.id, `Equipe simulada de ${newAgents.length} agentes criada (offline)`, 'delegate')
-      toast.success('Equipe simulada criada (offline)')
-    }
-    setSelectedId(manager.id)
-    setModal(null)
-    setTerminalOpen(true)
-  }, [agents, setAgents, setConnections, addEvent, setTerminalLines, setSelectedId, setModal, setTerminalOpen, serviceOnline, applySnapshot])
-
   const togglePause = useCallback((id: string) => {
     const target = agents.find((agent) => agent.id === id)
     if (!target) return
@@ -548,16 +461,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         { id: crypto.randomUUID(), type: 'output', text: '/status   Resume os agentes do workspace' },
         { id: crypto.randomUUID(), type: 'output', text: '/agents   Lista runtimes e estados' },
         { id: crypto.randomUUID(), type: 'output', text: '/create   Abre a criação manual de agente' },
-        { id: crypto.randomUUID(), type: 'output', text: '/delegate Abre a orquestração do Gerente' },
         { id: crypto.randomUUID(), type: 'output', text: '/clear    Limpa este terminal' },
       )
     } else if (trimmed === '/status') {
       lines.push({ id: crypto.randomUUID(), type: 'output', text: `${agents.length} agentes · ${agents.filter((a) => a.status === 'working').length} executando · ${agents.filter((a) => a.status === 'paused').length} pausados` })
     } else if (trimmed === '/agents') {
       agents.forEach((item) => lines.push({ id: crypto.randomUUID(), type: 'output', text: `${item.name.padEnd(18)} ${item.runtime.padEnd(14)} ${item.status}` }))
-    } else if (trimmed === '/create' || trimmed === '/delegate') {
-      lines.push({ id: crypto.randomUUID(), type: 'success', text: trimmed === '/create' ? 'Abrindo configuração manual…' : 'Abrindo delegação ao Gerente…' })
-      window.setTimeout(() => setModal(trimmed === '/create' ? 'create' : 'manager'), 120)
+    } else if (trimmed === '/create') {
+      lines.push({ id: crypto.randomUUID(), type: 'success', text: 'Abrindo configuração manual…' })
+      window.setTimeout(() => setModal('create'), 120)
     } else {
       lines.push(
         { id: crypto.randomUUID(), type: 'output', text: `Comando registrado para ${agent.name}: ${displayCommand}` },
@@ -1020,7 +932,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     agents, connections, events, selectedId, modal, terminalOpen, terminalExpanded, terminalLines,
     showGrid, showMinimap, goals, workItems, projects, activeProject, cliRuntimes,
     setSelectedId, setModal, setTerminalOpen, setTerminalExpanded, setShowGrid, setShowMinimap,
-    setAgentPosition, addConnection, updateConnectionLabel, removeConnection, createAgent, delegateToManager, togglePause, removeAgent,
+    setAgentPosition, addConnection, updateConnectionLabel, removeConnection, createAgent, togglePause, removeAgent,
     runCommand, sendRawKey, resizeAgentSession, getRawOutput, subscribeRawOutput, clearTerminal, resetDemo, clearWorkspace,
     moveWorkItem, addWorkItem, addGoal, addProject, setActiveProject,
     checkCli, installCli, toggleCliApproved,

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ArrowRight, BookmarkPlus, Bot, Network, Plus, Save, Sparkles, Trash2 } from 'lucide-react'
+import { BookmarkPlus, Plus, Save, Trash2 } from 'lucide-react'
 import { Modal } from './Modal'
 import type { Agent } from '@/types/agent'
 import type { PromptTemplate } from '@/lib/api'
@@ -195,35 +195,6 @@ export function CreateAgentDialog({ onCreate, ...props }: AgentFormProps & { onC
 
 export function EditAgentDialog({ onSave, ...props }: AgentFormProps & { agent: Agent; onSave: (input: NewAgentInput) => Promise<boolean> }) {
   return <AgentFormDialog {...props} onSubmit={onSave} />
-}
-
-export function ManagerDialog({ serviceOnline, onClose, onDelegate }: { serviceOnline?: boolean; onClose: () => void; onDelegate: (objective: string) => void }) {
-  const [objective, setObjective] = useState('')
-  const [submitted, setSubmitted] = useState(false)
-  const plan = useMemo(() => [
-    { name: 'Estrategista', role: 'Decompor o objetivo e priorizar entregas', runtime: 'Claude Code' },
-    { name: 'Analista', role: 'Investigar contexto, dados e restrições', runtime: 'Kimi CLI' },
-    { name: 'Executor', role: 'Produzir a entrega e reportar o resultado', runtime: 'Codex CLI' },
-  ], [])
-
-  const submit = (event: React.FormEvent) => {
-    event.preventDefault()
-    setSubmitted(true)
-    if (objective.trim().length < 12) return
-    onDelegate(objective.trim())
-  }
-
-  return (
-    <Modal title="Delegar um objetivo" eyebrow="ORQUESTRAÇÃO AUTÔNOMA" onClose={onClose} wide>
-      <form onSubmit={submit} className="manager-form">
-        <div className="manager-intro"><span><Network size={22} /></span><div><strong>O Gerente monta a equipe.</strong><p>Ele criará especialistas, definirá instruções e conectará cada agente ao objetivo.</p></div></div>
-        <label className="prompt-field">Objetivo para o workspace<textarea autoFocus value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Ex.: Especificar e prototipar uma CLI para orquestrar agentes locais no Windows." aria-invalid={submitted && objective.trim().length < 12} />{submitted && objective.trim().length < 12 && <small className="field-error">Descreva um objetivo com pelo menos 12 caracteres.</small>}</label>
-        <div className="team-plan"><div className="section-label">{serviceOnline ? 'EQUIPE PROPOSTA · CRIAÇÃO REAL' : 'EQUIPE PROPOSTA · DEMONSTRAÇÃO (OFFLINE)'}</div>{plan.map((agent, index) => <div className="plan-agent" key={agent.name}><span className="plan-index">0{index + 1}</span><Bot size={16} /><span><strong>{agent.name}</strong><small>{agent.role}</small></span><em>{agent.runtime}</em></div>)}</div>
-        <div className="autonomy-banner"><Sparkles size={16} /><span><strong>Autonomia total no workspace</strong><small>O Gerente poderá criar e coordenar estes agentes sem aprovações intermediárias.</small></span></div>
-        <footer className="modal-footer"><button className="button button--secondary" type="button" onClick={onClose}>Cancelar</button><button className="button button--primary" type="submit">Criar equipe <ArrowRight size={16} /></button></footer>
-      </form>
-    </Modal>
-  )
 }
 
 export function RemoveAgentDialog({ agent, subordinates, tasks, onClose, onConfirm }: { agent: Agent; subordinates: number; tasks: number; onClose: () => void; onConfirm: () => void }) {

@@ -28,7 +28,8 @@
     },
     "files": [
       "main.js",
-      "preload.cjs"
+      "preload.cjs",
+      "start-error.js"
     ],
     "extraResources": [
       {

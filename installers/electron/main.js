@@ -9,9 +9,12 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { existsSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
+import { describeStartError } from './start-error.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const isPackaged = app.isPackaged
+const parsedEnvPort = Number(process.env.PORT)
+const CORE_PORT = Number.isInteger(parsedEnvPort) && parsedEnvPort > 0 && parsedEnvPort <= 65535 ? parsedEnvPort : 7845
 
 // Em dev: o código-fonte está em vertice/{core,app,runtimes}.
 // Empacotado (electron-builder): esses diretórios são copiados para resources/ via extraResources.
@@ -32,6 +35,7 @@ process.env.VERTICE_API_TOKEN = API_TOKEN
 
 let mainWindow = null
 let coreModule = null
+let coreStarted = false
 
 async function startCoreService() {
   if (!existsSync(CORE_ENTRY)) {
@@ -39,9 +43,25 @@ async function startCoreService() {
   }
   // Import dinâmico: o core usa node:sqlite e node-pty, que exigem o runtime do Electron.
   // pathToFileURL garante um import() válido a partir de caminho absoluto no Windows.
-  const core = await import(pathToFileURL(CORE_ENTRY).href)
+  const core = coreModule ?? await import(pathToFileURL(CORE_ENTRY).href)
   coreModule = core
-  await core.startCore()
+  await core.startCore({ port: CORE_PORT })
+  coreStarted = true
+}
+
+async function showStartError(error, port = CORE_PORT) {
+  const info = describeStartError(error, port)
+  const { response } = await dialog.showMessageBox({
+    type: 'error',
+    title: info.title,
+    message: info.message,
+    detail: info.detail,
+    buttons: ['Tentar de novo', 'Abrir offline', 'Sair'],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+  })
+  return response
 }
 
 function createWindow() {
@@ -98,20 +118,33 @@ ipcMain.handle('vertice:pick-folder', async (event, options) => {
 })
 
 app.whenReady().then(async () => {
-  try {
-    await startCoreService()
-  } catch (error) {
-    console.error('[vertice] Falha ao iniciar o core:', error)
+  while (!coreStarted) {
+    try {
+      await startCoreService()
+      break
+    } catch (error) {
+      console.error('[vertice] Falha ao iniciar o core:', error)
+      const response = await showStartError(error, CORE_PORT)
+      if (response === 0) continue
+      if (response === 1) break
+      app.quit()
+      return
+    }
   }
+
   createWindow()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+}).catch((error) => {
+  console.error('[vertice] Erro inesperado ao iniciar o aplicativo:', error)
+  app.quit()
 })
 
 // Antes de sair, o core grava a conversa pendente de cada agente (memória viva).
 app.on('before-quit', () => {
+  if (!coreStarted) return
   try { coreModule?.shutdownCore?.() } catch (error) { console.error('[vertice] falha ao gravar a memória ao sair:', error) }
 })
 

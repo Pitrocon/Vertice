@@ -13,10 +13,10 @@ import { assertSafeProjectPath, expandEnvVars, WorkspaceError } from './workspac
 import { checkRequestOrigin, isFileOrigin, isLocalHost, isLocalOrigin, tokenFromRequest } from './security.js'
 import { describePolicyEffects, mergePolicyPatch } from './policies.js'
 import {
-  configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName,
+  configureOrchestrator, dispatchWorkItem, completeWorkItem, runtimeIdFromName,
   launchAgentSession, flushAgentTranscript, clearAgentSession,
   syncMemoryFile, syncAllMemoryFiles, flushTranscripts, forgetAgentTranscript, forgetAllTranscripts, onWorkItemRemoved, sendAgentMessage, approveWorkItem, releaseDependents,
-  resetForProjectSwitch, baselineHandoffFiles, stopHeadlessRuns,
+  resetForProjectSwitch, baselineHandoffFiles, stopHeadlessRuns, stopHandoffWatcher,
 } from './orchestrator.js'
 import {
   listSessions, listEvents, recordEvent,
@@ -924,70 +924,6 @@ app.post('/api/work-items/:id/reject', async (req, res) => {
   }
 })
 
-// B5: Gerente real cria subagentes + conexoes + tarefas a partir de um objetivo.
-// Espera { managerId, objective, team: [{ name, role, runtime, model, prompt }], maxAgents }.
-app.post('/api/orchestrator/delegate', (req, res) => {
-  if (!getActiveProjectId()) return res.status(409).json({ error: NO_ACTIVE_PROJECT_ERROR })
-  const { managerId = 'gerente', objective, team = [], maxAgents = 12 } = req.body ?? {}
-  if (!objective || typeof objective !== 'string') {
-    return res.status(400).json({ error: 'objective é obrigatório' })
-  }
-  const snapshot = getWorkspaceSnapshot()
-  const manager = snapshot.agents.find((a) => a.id === managerId)
-  // Operação do zero: sem NENHUM gerente, o Gerente padrão é criado (depois de validar o time).
-  const needsManager = !manager
-  if (needsManager && snapshot.agents.some((a) => a.kind === 'manager')) {
-    return res.status(404).json({ error: 'Gerente não encontrado' })
-  }
-
-  // Validacao: runtime de cada subagente precisa estar aprovado; respeitar limite.
-  const approved = getSetting('approvedRuntimes') ?? []
-  const currentWorkers = snapshot.agents.filter((a) => a.kind === 'worker').length
-  if (currentWorkers + team.length > maxAgents) {
-    return res.status(400).json({ error: `Limite de ${maxAgents} agentes excedido.` })
-  }
-  for (const member of team) {
-    const rid = runtimeIdFromName(member.runtime)
-    if (!rid) {
-      return res.status(400).json({ error: `Runtime "${member.runtime}" do subagente ${member.name} não existe no catálogo.` })
-    }
-    if (!approved.includes(rid)) {
-      return res.status(403).json({ error: `Runtime "${member.runtime}" do subagente ${member.name} não está aprovado.` })
-    }
-  }
-
-  if (needsManager) {
-    upsertAgent({
-      id: managerId, name: 'Gerente', role: 'Orquestrador principal', kind: 'manager',
-      runtime: 'Claude Code', model: 'claude-sonnet', status: 'idle', task: 'Aguardando objetivo',
-      prompt: 'Coordene a equipe, divida objetivos em tarefas e crie especialistas quando necessário.',
-      x: 280, y: 0,
-    })
-    recordEvent(managerId, 'Gerente criado automaticamente para receber o objetivo', 'create')
-  }
-
-  // Cria subagentes reais + conexoes manager->sub + uma tarefa por subagente.
-  const stamp = Date.now().toString(36)
-  const created = []
-  team.forEach((member, index) => {
-    const id = `${(member.name || 'agente').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${stamp}-${index}`
-    upsertAgent({
-      id, name: member.name, role: member.role ?? 'Subagente', kind: 'worker',
-      runtime: member.runtime, model: member.model ?? 'local/default',
-      status: 'idle', task: 'Aguardando despacho', progress: 0,
-      prompt: member.prompt ?? `Contribua para o objetivo: ${objective}`,
-      x: 40 + ((currentWorkers + index) % 3) * 315, y: 580 + Math.floor((currentWorkers + index) / 3) * 195,
-      createdBy: managerId,
-    })
-    createConnection({ id: randomUUID(), source: managerId, target: id, label: 'delega', active: false })
-    const taskId = randomUUID()
-    createWorkItem({ id: taskId, title: `${member.role ?? member.name}: ${objective}`, status: 'todo', assigneeId: id, createdBy: managerId })
-    created.push({ agentId: id, taskId })
-  })
-  recordEvent(managerId, `Gerente criou ${team.length} subagente(s) real(is) para: ${objective}`, 'delegate')
-  res.json({ ok: true, created, snapshot: broadcastSnapshot() })
-})
-
 app.post('/api/sessions', async (req, res) => {
   const { agentId, runtimeId, cwd, cols, rows } = req.body ?? {}
   if (!isFilledText(agentId) || !isFilledText(runtimeId)) {
@@ -1099,6 +1035,11 @@ function broadcast(event) {
   }
 }
 
+wss.on('error', (error) => {
+  // Erros de bind do servidor HTTP (ex.: EADDRINUSE) já são tratados pela Promise de startCore().
+  if (server.listening) console.error('[vertice-core] erro no WebSocket:', error.message)
+})
+
 wss.on('connection', (socket) => {
   socket.send(JSON.stringify({ type: 'hello', service: 'vertice-core', version: '0.1.0' }))
   socket.on('message', (raw) => {
@@ -1116,23 +1057,42 @@ configureOrchestrator({ broadcast })
 // subir o core in-process; também é chamado automaticamente no modo standalone
 // (node src/index.js) via a checagem de entrypoint abaixo.
 export function startCore({ port = PORT } = {}) {
-  recordEvent(null, 'Serviço local do Vértice iniciado', 'system')
-  void syncUserCliPath()
-  syncAllMemoryFiles()
-  return new Promise((resolve) => {
-    server.listen(port, () => {
+  return new Promise((resolve, reject) => {
+    const cleanupListeners = () => {
+      server.off('error', onError)
+      server.off('listening', onListening)
+    }
+    const onError = (error) => {
+      cleanupListeners()
+      reject(error)
+    }
+    const onListening = () => {
+      cleanupListeners()
+      recordEvent(null, 'Serviço local do Vértice iniciado', 'system')
+      void syncUserCliPath()
+      syncAllMemoryFiles()
       console.log(`[vertice-core] ouvindo em http://localhost:${port} (ws em /ws)`)
       resolve(server)
-    })
+    }
+    server.once('error', onError)
+    server.once('listening', onListening)
+    try {
+      server.listen(port)
+    } catch (error) {
+      cleanupListeners()
+      reject(error)
+    }
   })
 }
 
 server.on('close', () => {
+  stopHandoffWatcher()
   stopHeadlessRuns()
 })
 
 // Grava a conversa pendente de cada agente e encerra execuções headless ativas antes de sair.
 export function shutdownCore() {
+  stopHandoffWatcher()
   stopHeadlessRuns()
   flushTranscripts()
 }
@@ -1142,7 +1102,10 @@ export { server, PORT }
 // Auto-start no modo standalone (node src/index.js), mas não quando importado.
 const isMainEntry = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])
 if (isMainEntry) {
-  startCore()
+  startCore().catch((error) => {
+    console.error('[vertice-core] falha ao iniciar o serviço:', error?.message ?? error)
+    process.exit(1)
+  })
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.once(signal, () => { shutdownCore(); process.exit(0) })
   }

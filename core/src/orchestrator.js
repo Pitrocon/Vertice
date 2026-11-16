@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node
 import { join } from 'node:path'
 import { RUNTIME_CATALOG, resolveCommand, checkAuth } from './runtimes.js'
 import { createTaskMonitor, COMPLETION_INSTRUCTION, stripAnsi } from './task-monitor.js'
-import { startSession, writeToSession, listActiveSessions, buildChildEnv } from './sessions.js'
+import { startSession, writeToSession, listActiveSessions, killSession, buildChildEnv } from './sessions.js'
 import { resolveExecutionMode, buildHeadlessLaunch, mapHeadlessOutcome, runHeadless, killHeadlessProcess } from './headless.js'
 import { assertAllowedCwd, WorkspaceError } from './workspace.js'
 import { buildPolicyArgs, buildPoliciesNote } from './policies.js'
@@ -36,6 +36,14 @@ const agentSessions = new Map()
 // Execuções headless em andamento: Map<workItemId, { child, agentId }>
 const headlessRuns = new Map()
 let broadcastFn = () => {}
+const DEFAULT_SESSION_API = {
+  startSession,
+  writeToSession,
+  listActiveSessions,
+  resolveCommand,
+  killSession,
+}
+let sessionApi = { ...DEFAULT_SESSION_API }
 
 function createStatusError(status, message) {
   const err = new Error(message)
@@ -43,8 +51,13 @@ function createStatusError(status, message) {
   return err
 }
 
-export function configureOrchestrator({ broadcast }) {
+export function configureOrchestrator({ broadcast, sessionApi: customSessionApi } = {}) {
   if (typeof broadcast === 'function') broadcastFn = broadcast
+  if (customSessionApi !== undefined) {
+    sessionApi = customSessionApi
+      ? { ...DEFAULT_SESSION_API, ...customSessionApi }
+      : { ...DEFAULT_SESSION_API }
+  }
 }
 
 // Transcrição limpa de cada agente (E14): salva no SQLite com debounce e espelhada em arquivo.
@@ -116,7 +129,7 @@ function recordTranscript(event) {
 async function injectResumeContext(agentId, sessionId) {
   try {
     await waitForSessionReady(sessionId)
-    if (!listActiveSessions().some((s) => s.id === sessionId)) return
+    if (!sessionApi.listActiveSessions().some((s) => s.id === sessionId)) return
     syncAllMemoryFiles() // garante que o arquivo do agente e dos pares conectados existam ANTES da leitura
     const snapshot = getWorkspaceSnapshot()
     const agent = snapshot.agents.find((a) => a.id === agentId) ?? getAgent(agentId)
@@ -127,9 +140,9 @@ async function injectResumeContext(agentId, sessionId) {
       .replace(/\s*[\r\n]+\s*/g, ' ')
       .trim()
     markInjectedPrompt(sessionId, note)
-    if (!writeToSession(sessionId, note)) return
+    if (!sessionApi.writeToSession(sessionId, note)) return
     await delay(200)
-    writeToSession(sessionId, '\r')
+    sessionApi.writeToSession(sessionId, '\r')
     recordEvent(agentId, 'Contexto, memória viva e conexões enviados à sessão', 'system')
   } catch (error) {
     console.error('[memoria] falha ao enviar o contexto de retomada:', error.message)
@@ -290,13 +303,13 @@ export async function sendAgentMessage(sourceAgentId, targetAgentId, rawMessage,
 
     if (created) await waitForSessionReady(sessionId)
     markInjectedPrompt(sessionId, payload)
-    if (!writeToSession(sessionId, payload)) {
+    if (!sessionApi.writeToSession(sessionId, payload)) {
       recentDeliveries.delete(dedupeKey) // nada foi entregue: pode tentar de novo na hora
       releaseFailedDelivery(sourceAgent.id, targetAgent.id)
       return { ok: false, error: 'A sessão do agente de destino foi encerrada' }
     }
     await delay(200)
-    writeToSession(sessionId, '\r')
+    sessionApi.writeToSession(sessionId, '\r')
     startMessageTurn(sessionId, sourceAgent.id, targetAgent.id, runtimeId, payload)
 
     patchAgent(targetAgent.id, { status: 'working', task: `Recebido de ${sourceAgent.name}: ${message.slice(0, 70)}` })
@@ -428,7 +441,7 @@ function feedInterAgentRouter(event) {
 }
 
 function scanHandoffFiles() {
-  if (listActiveSessions().length === 0 && agentSessions.size === 0) return
+  if (sessionApi.listActiveSessions().length === 0 && agentSessions.size === 0) return
   try {
     const snapshot = getWorkspaceSnapshot()
     const projectPath = activeProjectPath(snapshot)
@@ -506,6 +519,12 @@ function ensureHandoffWatcher() {
   if (typeof handoffInterval.unref === 'function') handoffInterval.unref()
 }
 
+export function stopHandoffWatcher() {
+  if (!handoffInterval) return
+  clearInterval(handoffInterval)
+  handoffInterval = null
+}
+
 export const PROJECT_SWITCH_ERROR = 'Interrompida: o projeto foi trocado ou excluído e a sessão foi encerrada.'
 
 export function stopHeadlessRuns({ reason, agentId } = {}) {
@@ -559,7 +578,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 async function waitForSessionReady(sessionId, { quietMs = 800, maxMs = 10000 } = {}) {
   const startedAt = Date.now()
   while (Date.now() - startedAt < maxMs) {
-    if (!listActiveSessions().some((s) => s.id === sessionId)) return false
+    if (!sessionApi.listActiveSessions().some((s) => s.id === sessionId)) return false
     const last = sessionActivity.get(sessionId)
     if (last && Date.now() - last >= quietMs) return true
     await delay(100)
@@ -610,7 +629,7 @@ export async function launchAgentSession({ agent, agentId, runtimeId, cwd, resum
   }
   mkdirSync(safeCwd, { recursive: true })
 
-  const resolvedCmd = await resolveCommand(runtime.command)
+  const resolvedCmd = await sessionApi.resolveCommand(runtime.command)
   if (!resolvedCmd || (resolvedCmd === runtime.command && !existsSync(resolvedCmd))) {
     const msg = `CLI não encontrada no sistema: ${runtime.name} (${runtime.command}).`
     recordEvent(targetAgentId, `Sessão recusada: ${msg}`, 'system')
@@ -621,7 +640,7 @@ export async function launchAgentSession({ agent, agentId, runtimeId, cwd, resum
   const policyArgs = buildPolicyArgs(runtime, policies)
   const args = [...(runtime.sessionArgs ?? []), ...policyArgs]
 
-  const session = startSession({
+  const session = sessionApi.startSession({
     agentId: targetAgentId,
     runtimeId: runtime.id,
     command: resolvedCmd,
@@ -641,7 +660,7 @@ export async function launchAgentSession({ agent, agentId, runtimeId, cwd, resum
 async function ensureAgentSession(agent, snapshot) {
   const existingId = agentSessions.get(agent.id)
   if (existingId) {
-    const stillAlive = listActiveSessions().some((s) => s.id === existingId)
+    const stillAlive = sessionApi.listActiveSessions().some((s) => s.id === existingId)
     if (stillAlive) return { sessionId: existingId, created: false, isNew: false }
     agentSessions.delete(agent.id)
   }
@@ -882,7 +901,7 @@ export async function dispatchWorkItem(workItemId, { feedback } = {}) {
 
     assertNoActiveHeadlessRun(item.id, agent.id)
 
-    const resolvedCmd = await resolveCommand(runtime.command)
+    const resolvedCmd = await sessionApi.resolveCommand(runtime.command)
     if (!resolvedCmd || (resolvedCmd === runtime.command && !existsSync(resolvedCmd))) {
       const msg = `CLI não encontrada no sistema: ${runtime.name} (${runtime.command}).`
       recordEvent(agent.id, `Despacho automático recusado: ${msg}`, 'system')
@@ -971,12 +990,12 @@ export async function dispatchWorkItem(workItemId, { feedback } = {}) {
 
   const closedMessage = 'A sessão do agente foi encerrada antes de receber a tarefa.'
   markInjectedPrompt(sessionId, instruction)
-  if (!writeToSession(sessionId, instruction)) throw new Error(closedMessage)
+  if (!sessionApi.writeToSession(sessionId, instruction)) throw new Error(closedMessage)
   // Enter em escrita separada: TUIs tratam "texto + Enter" colados como colagem, não como envio.
   await delay(200)
   // O monitor nasce imediatamente antes do Enter (\r): o eco da digitação já ocorreu nos 200ms acima.
   startTaskMonitor(sessionId, item.id, runtimeId, instruction)
-  if (!writeToSession(sessionId, '\r')) { cancelTaskMonitor(sessionId); throw new Error(closedMessage) }
+  if (!sessionApi.writeToSession(sessionId, '\r')) { cancelTaskMonitor(sessionId); throw new Error(closedMessage) }
 
   // Nova rodada: a entrega/erro anteriores deixam de valer (o gestor verá a nova saída na revisão).
   patchWorkItem(item.id, { status: 'doing', ranMode: 'interactive', result: null, error: null })
@@ -990,15 +1009,6 @@ export async function dispatchWorkItem(workItemId, { feedback } = {}) {
   const updated = getWorkspaceSnapshot()
   broadcastFn({ type: 'task-updated', workItemId: item.id, snapshot: updated })
   return { ok: true, sessionId }
-}
-
-/**
- * Conexoes do organograma governam quem pode delegar a quem.
- * Retorna true se existe conexao source -> target.
- */
-export function canDelegate(sourceId, targetId) {
-  const { connections } = getWorkspaceSnapshot()
-  return connections.some((c) => c.source === sourceId && c.target === targetId)
 }
 
 // --- Conclusao da tarefa ----------------------------------------------------------

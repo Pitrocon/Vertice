@@ -31,15 +31,15 @@ cd app  && npm install && npm run dev   # frontend
 - Sessões de terminal reais via node-pty/ConPTY (cmd.exe /c para shims .cmd)
 - Streaming de saída via WebSocket; terminal do app envia input para a sessão viva
 - Instalação guiada de CLIs (Claude, Codex, Kimi, GLM/Z.ai, Antigravity, OpenCode; Ollama via winget)
-- Persistência completa em SQLite (`core/data/vertice.db`): projetos, agentes, conexões, metas, tarefas (`work_items`), sessões e eventos, sincronizados em tempo real via REST + WebSocket
+- Persistência completa e isolamento multi-projeto em SQLite (`core/data/vertice.db`): projetos, agentes, conexões, metas e tarefas (`work_items`) isolados por `project_id` (troca e exclusão com `?confirm=true` encerram sessões/monitores e marcam tarefas em andamento como `failed`; clonagem de equipe copia agentes e conexões limpos), além de sessões e eventos sincronizados em tempo real via REST + WebSocket
 - Segurança do serviço local: o core valida Origin/Host (HTTP e WebSocket) — sites abertos no navegador não conseguem ouvir terminais nem disparar ações; no Electron a janela (`file://`) usa um token por execução
 - Início LIMPO: o core não repovoa dados de demonstração no boot (só as configurações das CLIs). `POST /api/workspace/clear` apaga tudo menos as `settings`; `POST /api/workspace/reset` carrega a demo. Criar um projeto o torna workspace permitido (após validar o caminho: pastas de sistema, raiz de disco e a pasta pessoal inteira são recusadas)
 
 - Confinamento de workspace no backend (`core/src/workspace.js`): cwd fora do workspace permitido → HTTP 403, sem fallback para `homedir()`
-- Aprovação de CLIs e políticas da página CLI's persistidas em `settings`; runtime não aprovado não inicia sessão (403)
+- Aprovação de CLIs e políticas do setor aplicadas (`core/src/policies.js`): runtime não aprovado não inicia sessão (403); `PATCH /api/settings` mescla políticas (`allowDestructiveCommands`, `allowNetwork`, `allowCredentials`) e injeta flags técnicas suportadas pelo runtime (como `--sandbox workspace-write` no Codex) além de diretivas na memória viva e nas instruções de despacho
 - Instalação de CLIs via `POST /api/runtimes/:id/install` (só comando oficial do catálogo + revalida a versão)
 - Catálogo de runtimes em manifestos declarativos `runtimes/<id>.json`
-- Orquestração: `POST /api/orchestrator/delegate` cria subagentes + conexões + tarefas reais; `dispatch`/`complete` ligam tarefas do Work a sessões reais; conexões do organograma definem quem pode delegar
+- Orquestração e execução: `dispatch`/`complete`/`approve`/`reject` ligam tarefas do Work a sessões reais (com dependências `dependsOn` e modo headless estruturado opcional via `stdin` para `claude` e `codex`), reinício de sessão via `POST /api/agents/:id/session/restart` preserva pasta e retoma memória viva, e comunicação entre agentes conectados funciona por `POST /api/agents/:id/message`, marcador `[PARA: Nome]` no terminal e arquivos `.vertice/handoff*.md`
 - Empacotamento: scaffold Electron em `installers/electron/` (o `.exe` ainda precisa ser gerado numa máquina com Build Tools)
 
 ## O que ainda NÃO é automático / simulado
