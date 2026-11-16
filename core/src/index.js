@@ -6,13 +6,13 @@ import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 import express from 'express'
 import { WebSocketServer } from 'ws'
-import { detectRuntimes, resolveCommand, RUNTIME_CATALOG } from './runtimes.js'
+import { detectRuntimes, resolveCommand, RUNTIME_CATALOG, syncUserCliPath } from './runtimes.js'
 import { startSession, writeToSession, resizeSession, killSession, listActiveSessions } from './sessions.js'
 import { assertAllowedCwd, assertSafeProjectPath, expandEnvVars, WorkspaceError } from './workspace.js'
 import { checkRequestOrigin, isFileOrigin, isLocalHost, isLocalOrigin, tokenFromRequest } from './security.js'
 import {
   configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName, registerAgentSession, trackedBroadcast,
-  syncMemoryFile, flushTranscripts, forgetAgentTranscript, forgetAllTranscripts, onWorkItemRemoved,
+  syncMemoryFile, syncAllMemoryFiles, flushTranscripts, forgetAgentTranscript, forgetAllTranscripts, onWorkItemRemoved,
 } from './orchestrator.js'
 import {
   listSessions, listEvents, recordEvent,
@@ -21,7 +21,7 @@ import {
   upsertAgent, patchAgent, deleteAgent,
   getAgent, setAgentMemory, clearAgentMemory, wouldCreateCycle, setAgentParent,
   deleteWorkItem, patchGoal, deleteGoal, patchProject, deleteProject, releaseProjectWorkspace,
-  createConnection, createGoal, createWorkItem, patchWorkItem,
+  createConnection, deleteConnection, createGoal, createWorkItem, patchWorkItem,
   getSettings, getSetting, setSetting,
   listAllowedWorkspaces, addAllowedWorkspace, removeAllowedWorkspace,
 } from './db.js'
@@ -83,21 +83,34 @@ app.post('/api/runtimes/:id/install', async (req, res) => {
   }
 
   // Prepara o script PowerShell: garante TLS 1.2, recarrega o PATH do sistema/usuário e, se o comando
-  // exigir `npm` em uma máquina que ainda não tem Node.js instalado, instala o Node.js LTS via winget.
+  // exigir `npm` em uma máquina que ainda não tem Node.js instalado, baixa o binário portátil oficial
+  // do Node.js LTS em escopo do USUÁRIO (%LOCALAPPDATA%\Programs\nodejs) sem pedir permissão de Administrador (UAC).
   const needsNpm = /^\s*npm\s+/i.test(runtime.install)
   const psScript = [
     '$ErrorActionPreference = "Stop"',
     '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12',
-    '$env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User") + ";$env:ProgramFiles\\nodejs;$env:APPDATA\\npm"',
+    '$userNodeDir = Join-Path $env:LOCALAPPDATA "Programs\\nodejs"',
+    '$userNpmDir = Join-Path $env:APPDATA "npm"',
+    '$env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User") + ";$userNodeDir;$env:ProgramFiles\\nodejs;$userNpmDir"',
     ...(needsNpm ? [
       'if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue) -and -not (Get-Command npm -ErrorAction SilentlyContinue)) {',
-      '  if (Get-Command winget -ErrorAction SilentlyContinue) {',
-      '    winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements --silent',
-      '    $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User") + ";$env:ProgramFiles\\nodejs;$env:APPDATA\\npm"',
-      '  }',
+      '  $nodeVer = "v22.14.0"',
+      '  $zipPath = Join-Path $env:TEMP "node-$nodeVer-win-x64.zip"',
+      '  $extractRoot = Join-Path $env:TEMP "node-extract-$nodeVer"',
+      '  Invoke-WebRequest -Uri "https://nodejs.org/dist/$nodeVer/node-$nodeVer-win-x64.zip" -OutFile $zipPath -UseBasicParsing',
+      '  if (Test-Path $extractRoot) { Remove-Item $extractRoot -Recurse -Force }',
+      '  Expand-Archive -Path $zipPath -DestinationPath $extractRoot -Force',
+      '  if (Test-Path $userNodeDir) { Remove-Item $userNodeDir -Recurse -Force }',
+      '  New-Item -ItemType Directory -Force -Path (Split-Path $userNodeDir) | Out-Null',
+      '  Move-Item -Path (Join-Path $extractRoot "node-$nodeVer-win-x64") -Destination $userNodeDir -Force',
+      '  Remove-Item $zipPath -Force -ErrorAction SilentlyContinue',
+      '  Remove-Item $extractRoot -Recurse -Force -ErrorAction SilentlyContinue',
+      '  New-Item -ItemType Directory -Force -Path $userNpmDir | Out-Null',
+      '  $env:Path = "$userNodeDir;$userNpmDir;" + $env:Path',
+      '  & "$userNodeDir\\npm.cmd" config set prefix $userNpmDir --location=user',
       '}',
       'if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue) -and -not (Get-Command npm -ErrorAction SilentlyContinue)) {',
-      '  throw "Node.js (npm) não está instalado nesta máquina. Instale o Node.js LTS (https://nodejs.org) para instalar esta CLI."',
+      '  throw "Node.js (npm) não pôde ser preparado automaticamente no perfil do usuário."',
       '}',
     ] : []),
     runtime.install,
@@ -116,6 +129,9 @@ app.post('/api/runtimes/:id/install', async (req, res) => {
     recordEvent('gerente', `Falha ao instalar ${runtime.name}: ${error.message}`, 'system')
     return res.status(500).json({ error: `Falha ao instalar ${runtime.name}: ${error.message}` })
   }
+
+  // Persiste os diretórios de CLIs no PATH do Usuário do Windows para funcionarem também no PowerShell externo.
+  await syncUserCliPath()
 
   // Revalida a versao apos instalar.
   const detected = (await detectRuntimes({ force: true })).find((r) => r.id === runtime.id)
@@ -301,6 +317,7 @@ app.post('/api/agents', (req, res) => {
   if (parentId) {
     createConnection({ id: randomUUID(), source: parentId, target: agent.id, label: 'delega', active: false })
   }
+  syncAllMemoryFiles()
   recordEvent(agent.parentId ?? agent.id, `${agent.name} adicionado e persistido no SQLite`, 'create')
   res.json(broadcastSnapshot())
 })
@@ -318,6 +335,7 @@ app.post('/api/agents/batch', (req, res) => {
       createConnection({ id: conn.id || randomUUID(), source: conn.source, target: conn.target, label: conn.label ?? 'delega', active: Boolean(conn.active) })
     }
   }
+  syncAllMemoryFiles()
   if (eventMessage) {
     recordEvent(managerUpdate?.id ?? 'gerente', eventMessage, 'delegate')
   }
@@ -361,6 +379,9 @@ app.patch('/api/agents/:id', (req, res) => {
     if ((current.createdBy ?? '') !== parentId) setAgentParent(id, parentId, randomUUID())
   }
   patchAgent(id, fields)
+  if (body.name !== undefined || body.role !== undefined || body.prompt !== undefined || body.parentId !== undefined) {
+    syncAllMemoryFiles()
+  }
   res.json(broadcastSnapshot())
 })
 
@@ -374,6 +395,7 @@ app.delete('/api/agents/:id', (req, res) => {
   }
   forgetAgentTranscript(current.id)
   deleteAgent(current.id)
+  syncAllMemoryFiles()
   recordEvent(null, `Agente ${current.name} removido da equipe`, 'system')
   res.json(broadcastSnapshot())
 })
@@ -399,8 +421,18 @@ app.post('/api/agents/:id/memory', (req, res) => {
 app.post('/api/connections', (req, res) => {
   const { id, source, target, label, active } = req.body ?? {}
   if (!source || !target) return res.status(400).json({ error: 'source e target são obrigatórios' })
+  if (source === target) return res.status(400).json({ error: 'Um agente não pode conectar a si mesmo' })
   createConnection({ id: id || randomUUID(), source, target, label, active })
+  syncAllMemoryFiles()
   recordEvent(source, `Nova conexão com ${target}`, 'system')
+  res.json(broadcastSnapshot())
+})
+
+app.delete('/api/connections/:id', (req, res) => {
+  const ok = deleteConnection(req.params.id)
+  if (!ok) return res.status(404).json({ error: 'Conexão não encontrada' })
+  syncAllMemoryFiles()
+  recordEvent(null, 'Conexão removida do organograma', 'system')
   res.json(broadcastSnapshot())
 })
 
@@ -429,9 +461,17 @@ app.delete('/api/goals/:id', (req, res) => {
 })
 
 app.post('/api/work-items', (req, res) => {
-  const { id, title, status, assigneeId, goalId, priority } = req.body ?? {}
+  const { id, title, description, status, assigneeId, goalId, priority } = req.body ?? {}
   if (!title) return res.status(400).json({ error: 'title é obrigatório' })
-  createWorkItem({ id: id || randomUUID(), title, status: status ?? 'todo', assigneeId, goalId, priority: priority ?? 'media' })
+  createWorkItem({
+    id: id || randomUUID(),
+    title,
+    description: typeof description === 'string' ? description : '',
+    status: status ?? 'todo',
+    assigneeId,
+    goalId,
+    priority: priority ?? 'media',
+  })
   recordEvent(assigneeId ?? 'gerente', `Tarefa criada: ${title}`, 'create')
   res.json(broadcastSnapshot())
 })
@@ -444,6 +484,10 @@ app.patch('/api/work-items/:id', (req, res) => {
   if (body.title !== undefined) {
     if (!isFilledText(body.title)) return res.status(400).json({ error: 'O título da tarefa não pode ficar vazio' })
     fields.title = body.title.trim()
+  }
+  if (body.description !== undefined) {
+    if (typeof body.description !== 'string') return res.status(400).json({ error: 'description deve ser texto' })
+    fields.description = body.description
   }
   if (body.status !== undefined) {
     if (!WORK_STATUSES.includes(body.status)) return res.status(400).json({ error: 'status inválido' })
@@ -666,6 +710,8 @@ configureOrchestrator({ broadcast })
 // (node src/index.js) via a checagem de entrypoint abaixo.
 export function startCore({ port = PORT } = {}) {
   recordEvent(null, 'Serviço local do Vértice iniciado', 'system')
+  void syncUserCliPath()
+  syncAllMemoryFiles()
   return new Promise((resolve) => {
     server.listen(port, () => {
       console.log(`[vertice-core] ouvindo em http://localhost:${port} (ws em /ws)`)

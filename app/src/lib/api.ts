@@ -196,6 +196,10 @@ export const api = {
     return request<WorkspaceSnapshot>('POST', '/api/connections', input)
   },
 
+  async deleteConnection(id: string): Promise<WorkspaceSnapshot | null> {
+    return request<WorkspaceSnapshot>('DELETE', `/api/connections/${encodeURIComponent(id)}`)
+  },
+
   async createGoal(input: Goal): Promise<WorkspaceSnapshot | null> {
     return request<WorkspaceSnapshot>('POST', '/api/goals', input)
   },
@@ -209,7 +213,7 @@ export const api = {
   },
 
   // `assigneeId`/`goalId` vazios removem o responsável/a meta.
-  async updateWorkItem(id: string, fields: { title?: string; status?: string; priority?: string; assigneeId?: string; goalId?: string }): Promise<MutationResult> {
+  async updateWorkItem(id: string, fields: { title?: string; description?: string; status?: string; priority?: string; assigneeId?: string; goalId?: string }): Promise<MutationResult> {
     return mutate('PATCH', `/api/work-items/${encodeURIComponent(id)}`, fields)
   },
 

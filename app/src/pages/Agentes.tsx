@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router'
-import { Bot, CirclePause, CirclePlay, Network, Pencil, Plus, Sparkles, SquareTerminal, Trash2 } from 'lucide-react'
+import { Bot, CirclePause, CirclePlay, Network, Pencil, Plus, SquareTerminal, Trash2 } from 'lucide-react'
 import { useWorkspace } from '@/store/workspace'
 import { statusLabels, type Agent } from '@/types/agent'
 
@@ -30,8 +30,7 @@ export function AgentesPage() {
           <p>{agents.length} pessoas de IA na equipe · {agents.filter((a) => a.status === 'working').length} executando agora</p>
         </div>
         <div className="page-header__actions">
-          <button className="button button--secondary" onClick={() => setModal('create')}><Plus size={15} /> Novo agente</button>
-          <button className="button button--primary" onClick={() => setModal('manager')}><Sparkles size={15} /> Delegar ao Gerente</button>
+          <button className="button button--primary" onClick={() => setModal('create')}><Plus size={15} /> Novo agente</button>
         </div>
       </header>
 

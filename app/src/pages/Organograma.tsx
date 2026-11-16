@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef } from 'react'
 import {
   Background,
   BackgroundVariant,
+  ConnectionMode,
   Controls,
   MarkerType,
   MiniMap,
@@ -13,7 +14,7 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { Focus, Settings2, Sparkles, SquareTerminal } from 'lucide-react'
+import { Focus, Settings2, SquareTerminal } from 'lucide-react'
 import { AgentNode, type AgentFlowNode } from '@/components/AgentNode'
 import { Inspector } from '@/components/Inspector'
 import { TerminalPanel } from '@/components/TerminalPanel'
@@ -27,7 +28,7 @@ function OrganogramaView() {
   const {
     agents, connections, events, selectedId, terminalOpen, terminalExpanded, terminalLines,
     showGrid, showMinimap, setSelectedId, setModal, setTerminalOpen, setTerminalExpanded,
-    setAgentPosition, addConnection, togglePause, runCommand, clearTerminal,
+    setAgentPosition, addConnection, removeConnection, togglePause, runCommand, clearTerminal,
   } = workspace
   const flowRef = useRef<ReactFlowInstance<AgentFlowNode, Edge> | null>(null)
 
@@ -49,9 +50,9 @@ function OrganogramaView() {
     source: connection.source,
     target: connection.target,
     label: connection.label,
-    animated: connection.active,
+    animated: true,
     className: connection.active ? 'flow-edge flow-edge--active' : 'flow-edge',
-    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: connection.active ? '#e8862e' : '#62594e' },
+    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: connection.active ? '#e8862e' : '#4d9aff' },
   })), [connections])
 
   const fitCanvas = useCallback(() => {
@@ -110,18 +111,21 @@ function OrganogramaView() {
             nodes={flowNodes}
             edges={flowEdges}
             nodeTypes={nodeTypes}
+            connectionMode={ConnectionMode.Loose}
             onInit={(instance) => { flowRef.current = instance }}
             onNodesChange={handleNodesChange}
             onNodeClick={(_, node) => setSelectedId(node.id)}
             onConnect={handleConnect}
+            onEdgeDoubleClick={(_, edge) => removeConnection(edge.id)}
+            onEdgesDelete={(deleted) => deleted.forEach((edge) => removeConnection(edge.id))}
             fitView
             fitViewOptions={{ padding: 0.08, maxZoom: 0.95 }}
             minZoom={0.3}
             maxZoom={1.6}
             snapToGrid
             snapGrid={[16, 16]}
-            defaultEdgeOptions={{ type: 'smoothstep' }}
-            connectionLineStyle={{ stroke: '#e8862e', strokeWidth: 1.5 }}
+            defaultEdgeOptions={{ type: 'default' }}
+            connectionLineStyle={{ stroke: '#4d9aff', strokeWidth: 2, strokeDasharray: '6 4' }}
           >
             {showGrid && <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#51483d" />}
             <Controls position="bottom-left" showInteractive={false} />
@@ -135,9 +139,8 @@ function OrganogramaView() {
           <div className="canvas-actions">
             <button className="icon-button" onClick={() => setModal('settings')} aria-label="Preferências do organograma" style={{ border: '1px solid var(--border-subtle)', background: 'var(--surface)' }}><Settings2 size={16} /></button>
             <button className="button button--canvas" onClick={fitCanvas}><Focus size={15} /> Enquadrar</button>
-            <button className="button button--primary" onClick={() => setModal('manager')}><Sparkles size={15} /> Nova delegação</button>
           </div>
-          <div className="canvas-hint">Arraste os nós para organizar <span>·</span> Puxe um ponto para conectar</div>
+          <div className="canvas-hint">Arraste os nós para organizar <span>·</span> Puxe qualquer ponto lateral para conectar <span>·</span> Duplo-clique na linha para desconectar</div>
         </div>
         {terminalOpen && activeTerminalAgent ? (
           <TerminalPanel

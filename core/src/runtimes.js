@@ -77,13 +77,47 @@ function loadCatalog() {
 // instalar e iniciar uma sessão interativa da CLI.
 export const RUNTIME_CATALOG = loadCatalog()
 
-const EXTRA_BIN_DIRS = [
+export const EXTRA_BIN_DIRS = [
+  process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Programs', 'nodejs') : null,
+  process.env.ProgramFiles ? join(process.env.ProgramFiles, 'nodejs') : null,
   process.env.APPDATA ? join(process.env.APPDATA, 'npm') : null,
   process.env.APPDATA ? join(process.env.APPDATA, 'kimi-desktop', 'daimon-share', 'daimon', 'npm-global') : null,
   process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'agy', 'bin') : null,
   join(homedir(), '.kimi-code', 'bin'),
   join(homedir(), '.local', 'bin'),
 ].filter(Boolean)
+
+// Garante que as pastas de CLIs instaladas para o usuário façam parte tanto do PATH atual do Vértice
+// quanto do PATH persistente do Usuário no Windows (para funcionarem também no PowerShell/CMD fora do app).
+export function syncUserCliPath() {
+  const existingDirs = EXTRA_BIN_DIRS.filter((dir) => existsSync(dir))
+  if (!existingDirs.length) return
+  const currentPath = process.env.Path || process.env.PATH || ''
+  const lowerCurrent = currentPath.split(';').map((p) => p.trim().toLowerCase())
+  const toAddInProcess = existingDirs.filter((dir) => !lowerCurrent.includes(dir.toLowerCase()))
+  if (toAddInProcess.length) {
+    process.env.Path = `${currentPath};${toAddInProcess.join(';')}`
+    process.env.PATH = process.env.Path
+  }
+  if (process.platform === 'win32') {
+    const dirsLiteral = existingDirs.map((d) => `'${d.replace(/'/g, "''")}'`).join(',')
+    const ps = [
+      `$dirs = @(${dirsLiteral})`,
+      '$userPath = [Environment]::GetEnvironmentVariable("Path", "User")',
+      'if (-not $userPath) { $userPath = "" }',
+      '$parts = $userPath -split ";" | Where-Object { $_.Trim() -ne "" }',
+      '$changed = $false',
+      'foreach ($d in $dirs) {',
+      '  if ((Test-Path $d) -and -not ($parts | Where-Object { $_.TrimEnd("\\").ToLower() -eq $d.TrimEnd("\\").ToLower() })) {',
+      '    $parts += $d',
+      '    $changed = $true',
+      '  }',
+      '}',
+      'if ($changed) { [Environment]::SetEnvironmentVariable("Path", ($parts -join ";"), "User") }',
+    ].join('; ')
+    execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps], { timeout: 10000, windowsHide: true }, () => {})
+  }
+}
 
 function run(cmd, args, timeoutMs = 6000) {
   return new Promise((resolve) => {

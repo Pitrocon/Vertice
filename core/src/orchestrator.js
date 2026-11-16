@@ -1,16 +1,18 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { RUNTIME_CATALOG, resolveCommand } from './runtimes.js'
-import { createTaskMonitor, COMPLETION_INSTRUCTION } from './task-monitor.js'
+import { createTaskMonitor, COMPLETION_INSTRUCTION, stripAnsi } from './task-monitor.js'
 import { startSession, writeToSession, listActiveSessions } from './sessions.js'
 import { assertAllowedCwd, WorkspaceError } from './workspace.js'
 import {
   getWorkspaceSnapshot, patchWorkItem, patchAgent, recordEvent,
   getSetting, listAllowedWorkspaces,
   getAgent, getAgentTranscript, setAgentTranscript, appendAgentMemory,
+  setConnectionActive,
 } from './db.js'
 import {
-  createTranscriptRecorder, hasPriorContext, buildResumeNote, buildMemoryMarkdown, writeMemoryFile, formatMemoryEntry,
+  createTranscriptRecorder, hasPriorContext, buildResumeNote, buildConnectedAgentsHint, buildMemoryMarkdown, writeMemoryFile, formatMemoryEntry,
 } from './agent-memory.js'
 
 // Mapeia o "runtime" humano do agente (ex.: "Claude Code") para o id do catalogo.
@@ -49,15 +51,32 @@ export function syncMemoryFile(agentId) {
   try {
     const agent = getAgent(agentId)
     if (!agent) return null
-    const projectPath = activeProjectPath(getWorkspaceSnapshot())
+    const snapshot = getWorkspaceSnapshot()
+    const projectPath = activeProjectPath(snapshot)
     if (!projectPath) return null
     // O arquivo só é gravado dentro de um workspace permitido (mesma regra de confinamento das sessões).
     const safeDir = assertAllowedCwd(projectPath, listAllowedWorkspaces())
-    return writeMemoryFile(safeDir, agentId, buildMemoryMarkdown({ agent, memory: agent.memory, transcript: agent.lastTranscript }))
+    return writeMemoryFile(safeDir, agentId, buildMemoryMarkdown({
+      agent,
+      memory: agent.memory,
+      transcript: agent.lastTranscript,
+      allAgents: snapshot.agents,
+      connections: snapshot.connections,
+    }))
   } catch (error) {
     console.error('[memoria] não foi possível gravar o arquivo de memória:', error.message)
     return null
   }
+}
+
+/** Sincroniza os arquivos .vertice/memory/<id>.md de todos os agentes para manter o mapa de conexões atualizado. */
+export function syncAllMemoryFiles() {
+  try {
+    const snapshot = getWorkspaceSnapshot()
+    for (const agent of snapshot.agents) {
+      syncMemoryFile(agent.id)
+    }
+  } catch { /* ignora caso nenhum workspace esteja ativo */ }
 }
 
 export function flushTranscripts() { transcripts.flushAll() }
@@ -70,16 +89,26 @@ function recordTranscript(event) {
   else if (event.type === 'exit') transcripts.flush(event.agentId)
 }
 
-// Sessão retomada: espera a CLI subir e a orienta (em UMA linha) a ler a memória viva do agente.
+// Sessão iniciada ou retomada: espera a CLI subir e a orienta (em UMA linha) a ler a memória viva
+// e o mapa de conexões do agente (.vertice/memory/<id>.md).
 async function injectResumeContext(agentId, sessionId) {
   try {
     await waitForSessionReady(sessionId)
     if (!listActiveSessions().some((s) => s.id === sessionId)) return
-    syncMemoryFile(agentId) // o arquivo precisa existir ANTES de a IA ser mandada lê-lo
-    if (!writeToSession(sessionId, buildResumeNote(agentId))) return
+    syncAllMemoryFiles() // garante que o arquivo do agente e dos pares conectados existam ANTES da leitura
+    const snapshot = getWorkspaceSnapshot()
+    const agent = snapshot.agents.find((a) => a.id === agentId) ?? getAgent(agentId)
+    const connectedHint = buildConnectedAgentsHint(agent, snapshot.agents, snapshot.connections)
+    const note = [buildResumeNote(agentId, connectedHint), agent?.prompt ? `Sua instrução base (${agent.role}): ${agent.prompt}` : '']
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s*[\r\n]+\s*/g, ' ')
+      .trim()
+    markInjectedPrompt(sessionId, note)
+    if (!writeToSession(sessionId, note)) return
     await delay(200)
     writeToSession(sessionId, '\r')
-    recordEvent(agentId, 'Memória viva enviada à sessão retomada', 'system')
+    recordEvent(agentId, 'Contexto, memória viva e conexões enviados à sessão', 'system')
   } catch (error) {
     console.error('[memoria] falha ao enviar o contexto de retomada:', error.message)
   }
@@ -88,16 +117,23 @@ async function injectResumeContext(agentId, sessionId) {
 /**
  * Registra a sessão do agente. Retorna `true` se ele já tinha memória/conversa de antes (avaliado ANTES de
  * marcar o início da nova sessão, que altera a transcrição). Com `resume`, a IA é orientada a ler a memória
- * viva assim que a CLI terminar de subir; o despacho de tarefa usa `resume: false` e leva a nota na instrução.
+ * viva e suas conexões assim que a CLI terminar de subir; o despacho de tarefa usa `resume: false` e leva a nota na instrução.
  */
 export function registerAgentSession(agentId, sessionId, { runtimeId, resume = true } = {}) {
   if (!agentId || !sessionId) return false
   agentSessions.set(agentId, sessionId)
   const agent = getAgent(agentId)
   const hadContext = agent ? hasPriorContext({ memory: agent.memory, transcript: agent.lastTranscript }) : false
+  const snapshot = getWorkspaceSnapshot()
+  const hasConnections = snapshot.connections.some((c) => c.source === agentId || c.target === agentId)
+  const hasPrompt = Boolean(agent?.prompt?.trim())
   transcripts.markSessionStart(agentId)
-  // O PowerShell digitaria a nota como COMANDO: a retomada só vale para CLIs de IA.
-  if (resume && hadContext && runtimeId !== 'powershell') void injectResumeContext(agentId, sessionId)
+  syncAllMemoryFiles()
+  ensureHandoffWatcher()
+  // O PowerShell digitaria a nota como COMANDO: a injeção de contexto só vale para CLIs de IA.
+  if (resume && (hadContext || hasConnections || hasPrompt) && runtimeId !== 'powershell') {
+    void injectResumeContext(agentId, sessionId)
+  }
   return hadContext
 }
 
@@ -126,10 +162,233 @@ const sessionActivity = new Map()
 
 function trackedBroadcast(event) {
   if (event?.type === 'output' && event.sessionId) sessionActivity.set(event.sessionId, Date.now())
-  else if (event?.type === 'exit' && event.sessionId) sessionActivity.delete(event.sessionId)
+  else if (event?.type === 'exit' && event.sessionId) {
+    sessionActivity.delete(event.sessionId)
+    agentOutputBuffers.delete(event.sessionId)
+    injectedPrompts.delete(event.sessionId)
+  }
   broadcastFn(event)
   feedTaskMonitor(event)
   recordTranscript(event)
+  feedInterAgentRouter(event)
+}
+
+// --- Roteador de comunicação entre agentes conectados (E15) --------------------
+// Permite que um agente envie mensagens diretamente para outro agente conectado:
+// 1. Pelo marcador `[PARA: NomeDoAgente] mensagem` ou `[DELEGAR: NomeDoAgente] mensagem` na saída do terminal;
+// 2. Por arquivos `.vertice/handoff*.md` criados pelo agente no workspace do projeto ativo;
+// 3. Automaticamente ao concluir uma tarefa (`completeWorkItem`) quando houver agentes conectados a jusante.
+const agentOutputBuffers = new Map() // sessionId -> partial line string
+const injectedPrompts = new Map()    // sessionId -> { text, at }
+const recentDeliveries = new Map()   // `${sourceId}->${targetId}:${hash}` -> timestamp
+const lastAgentForwardAt = new Map() // sourceAgentId -> timestamp
+const seenHandoffFiles = new Map()   // filePath -> mtimeMs
+let handoffInterval = null
+
+function markInjectedPrompt(sessionId, text) {
+  injectedPrompts.set(sessionId, { text: String(text ?? ''), at: Date.now() })
+}
+
+function normalizeAgentKey(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+}
+
+function resolveTargetAgent(sourceAgentId, rawTarget, snapshot = getWorkspaceSnapshot()) {
+  const cleanTarget = String(rawTarget ?? '').trim().replace(/^["'<]+|["'>]+$/g, '')
+  const key = normalizeAgentKey(cleanTarget)
+  if (!key || ['nomedoagente', 'agente', 'nome', 'alvo', 'destino'].includes(key)) return null
+
+  const outgoingIds = snapshot.connections.filter((c) => c.source === sourceAgentId).map((c) => c.target)
+  const incomingIds = snapshot.connections.filter((c) => c.target === sourceAgentId).map((c) => c.source)
+
+  if (['proximo', 'proximoagente', 'subordinado', 'filho', 'downstream'].includes(key)) {
+    return snapshot.agents.find((a) => a.id === outgoingIds[0]) ?? null
+  }
+  if (['supervisor', 'gerente', 'anterior', 'pai', 'upstream'].includes(key)) {
+    return snapshot.agents.find((a) => a.id === incomingIds[0]) ?? null
+  }
+
+  // Prioriza agentes diretamente conectados (saída ou entrada), depois qualquer agente do workspace.
+  const connectedPool = snapshot.agents.filter((a) => outgoingIds.includes(a.id) || incomingIds.includes(a.id))
+  for (const pool of [connectedPool, snapshot.agents]) {
+    const exact = pool.find((a) => a.id !== sourceAgentId && (normalizeAgentKey(a.name) === key || normalizeAgentKey(a.id) === key))
+    if (exact) return exact
+    const prefix = pool.find((a) => a.id !== sourceAgentId && (normalizeAgentKey(a.name).startsWith(key) || normalizeAgentKey(a.id).startsWith(key) || key.startsWith(normalizeAgentKey(a.name))))
+    if (prefix) return prefix
+  }
+  return null
+}
+
+/**
+ * Entrega uma mensagem de `sourceAgentId` diretamente na sessão real de `targetAgentId`.
+ * Se a sessão do agente de destino ainda não estiver aberta, abre automaticamente.
+ */
+export async function sendAgentMessage(sourceAgentId, targetAgentId, rawMessage, { reason = 'message' } = {}) {
+  const message = String(rawMessage ?? '').replace(/\s*[\r\n]+\s*/g, ' ').trim()
+  if (!sourceAgentId || !targetAgentId || sourceAgentId === targetAgentId || !message) return { ok: false }
+
+  const dedupeKey = `${sourceAgentId}->${targetAgentId}:${message.slice(0, 160)}`
+  const lastAt = recentDeliveries.get(dedupeKey) ?? 0
+  if (Date.now() - lastAt < 15000) return { ok: false, deduplicated: true }
+  recentDeliveries.set(dedupeKey, Date.now())
+  lastAgentForwardAt.set(sourceAgentId, Date.now())
+
+  try {
+    const snapshot = getWorkspaceSnapshot()
+    const sourceAgent = snapshot.agents.find((a) => a.id === sourceAgentId)
+    const targetAgent = snapshot.agents.find((a) => a.id === targetAgentId)
+    if (!sourceAgent || !targetAgent) return { ok: false }
+
+    setConnectionActive(sourceAgent.id, targetAgent.id, true)
+    syncAllMemoryFiles()
+
+    const { sessionId, created } = await ensureAgentSession(targetAgent, snapshot)
+    const runtimeId = runtimeIdForAgent(targetAgent)
+    const connectedHint = buildConnectedAgentsHint(targetAgent, snapshot.agents, snapshot.connections)
+    const resumePrefix = created && runtimeId !== 'powershell'
+      ? [buildResumeNote(targetAgent.id, connectedHint), targetAgent.prompt ? `Sua função (${targetAgent.role}): ${targetAgent.prompt}.` : ''].filter(Boolean).join(' ')
+      : ''
+
+    const payload = runtimeId === 'powershell'
+      ? `Write-Output "Mensagem de ${sourceAgent.name}: ${message.replace(/"/g, "'").slice(0, 200)}"`
+      : [
+          resumePrefix,
+          `Mensagem recebida do agente ${sourceAgent.name} (${sourceAgent.role}): "${message.slice(0, 1200)}".`,
+          targetAgent.prompt ? `Aplique sua instrução (${targetAgent.prompt}) sobre essa entrega e responda.` : 'Analise a entrega acima e dê continuidade ao trabalho.',
+        ].filter(Boolean).join(' ').replace(/\s*[\r\n]+\s*/g, ' ').trim()
+
+    if (created) await waitForSessionReady(sessionId)
+    markInjectedPrompt(sessionId, payload)
+    if (!writeToSession(sessionId, payload)) return { ok: false }
+    await delay(200)
+    writeToSession(sessionId, '\r')
+
+    patchAgent(targetAgent.id, { status: 'working', task: `Recebido de ${sourceAgent.name}: ${message.slice(0, 70)}` })
+    recordEvent(sourceAgent.id, `Comunicou com ${targetAgent.name} (${reason}): ${message.slice(0, 120)}`, 'delegate')
+    broadcastFn({ type: 'workspace-updated', snapshot: getWorkspaceSnapshot() })
+    return { ok: true, sessionId }
+  } catch (error) {
+    console.error('[orchestrator] falha ao entregar mensagem entre agentes:', error.message)
+    return { ok: false, error: error.message }
+  }
+}
+
+const INTER_AGENT_MARKER_RE = /\[(?:PARA|DELEGAR|HANDOFF|ENVIAR)\s*:\s*([^\]]+)\]\s*(.+)/i
+
+function processAgentOutputLine(agentId, sessionId, rawLine) {
+  const line = stripAnsi(rawLine).trim()
+  if (!line || line.length < 8) return
+  // Ignora linhas que fazem parte do próprio prompt/contexto injetado pelo Vértice.
+  if (
+    line.includes('Contexto Vértice:') ||
+    line.includes('Equipe conectada no Organograma:') ||
+    line.includes('Para enviar uma mensagem ou passar resultado diretamente') ||
+    line.includes('[PARA: NomeDoAgente]') ||
+    line.includes('Mensagem recebida do agente ')
+  ) return
+
+  const injected = injectedPrompts.get(sessionId)
+  if (injected && Date.now() - injected.at < 4000 && injected.text.includes(line.slice(0, 40))) return
+
+  const match = INTER_AGENT_MARKER_RE.exec(line)
+  if (!match) return
+  const [, rawTarget, rawMessage] = match
+  const message = rawMessage.trim()
+  if (!message || message.startsWith('<') || message.toLowerCase().startsWith('sua mensagem')) return
+
+  const targetAgent = resolveTargetAgent(agentId, rawTarget)
+  if (!targetAgent) return
+  void sendAgentMessage(agentId, targetAgent.id, message, { reason: 'marcador [PARA]' })
+}
+
+function feedInterAgentRouter(event) {
+  if (!event?.agentId || !event?.sessionId || event.type !== 'output') return
+  const prev = agentOutputBuffers.get(event.sessionId) ?? ''
+  const combined = (prev + String(event.data ?? '')).slice(-8192)
+  const parts = combined.split(/\r?\n|\r/)
+  agentOutputBuffers.set(event.sessionId, parts.pop() ?? '')
+  for (const part of parts) {
+    processAgentOutputLine(event.agentId, event.sessionId, part)
+  }
+}
+
+function scanHandoffFiles() {
+  if (listActiveSessions().length === 0 && agentSessions.size === 0) return
+  try {
+    const snapshot = getWorkspaceSnapshot()
+    const projectPath = activeProjectPath(snapshot)
+    if (!projectPath) return
+    const safeDir = assertAllowedCwd(projectPath, listAllowedWorkspaces())
+    const verticeDir = join(safeDir, '.vertice')
+    let entries = []
+    try { entries = readdirSync(verticeDir) } catch { return }
+
+    for (const name of entries) {
+      if (!/^handoff.*\.md$/i.test(name)) continue
+      const fullPath = join(verticeDir, name)
+      let stat
+      try { stat = statSync(fullPath) } catch { continue }
+      const prevMtime = seenHandoffFiles.get(fullPath) ?? 0
+      if (stat.mtimeMs <= prevMtime) continue
+      seenHandoffFiles.set(fullPath, stat.mtimeMs)
+
+      let content = ''
+      try { content = readFileSync(fullPath, 'utf8').trim() } catch { continue }
+      if (!content) continue
+
+      // Tenta identificar origem e destino pelo nome `handoff-<origem>-to-<destino>.md` ou pelas conexões ativas.
+      const nameMatch = /^handoff-([a-z0-9_-]+?)-to-([a-z0-9_-]+)\.md$/i.exec(name)
+      let sourceAgent = null
+      let targetAgent = null
+      if (nameMatch) {
+        const [, rawSrc, rawDst] = nameMatch
+        sourceAgent = snapshot.agents.find((a) => normalizeAgentKey(a.name) === normalizeAgentKey(rawSrc) || normalizeAgentKey(a.id).startsWith(normalizeAgentKey(rawSrc))) ?? null
+        if (sourceAgent) targetAgent = resolveTargetAgent(sourceAgent.id, rawDst, snapshot)
+      }
+      if (!sourceAgent || !targetAgent) {
+        const firstConn = snapshot.connections[0]
+        if (firstConn) {
+          sourceAgent = sourceAgent ?? snapshot.agents.find((a) => a.id === firstConn.source) ?? null
+          targetAgent = targetAgent ?? snapshot.agents.find((a) => a.id === firstConn.target) ?? null
+        }
+      }
+      if (sourceAgent && targetAgent) {
+        const summary = content.replace(/\s*[\r\n]+\s*/g, ' ').slice(0, 900)
+        void sendAgentMessage(
+          sourceAgent.id,
+          targetAgent.id,
+          `Arquivo .vertice/${name} entregue por ${sourceAgent.name}: ${summary}`,
+          { reason: `arquivo .vertice/${name}` },
+        )
+      }
+    }
+  } catch { /* ignora erros de leitura transitórios */ }
+}
+
+function ensureHandoffWatcher() {
+  if (handoffInterval) return
+  // Inicializa o mapa com arquivos já existentes antes da sessão para não reenviar handoffs antigos.
+  try {
+    const snapshot = getWorkspaceSnapshot()
+    const projectPath = activeProjectPath(snapshot)
+    if (projectPath) {
+      const safeDir = assertAllowedCwd(projectPath, listAllowedWorkspaces())
+      const verticeDir = join(safeDir, '.vertice')
+      for (const name of readdirSync(verticeDir)) {
+        if (/^handoff.*\.md$/i.test(name)) {
+          const fullPath = join(verticeDir, name)
+          seenHandoffFiles.set(fullPath, statSync(fullPath).mtimeMs)
+        }
+      }
+    }
+  } catch { /* diretório .vertice ainda não existe */ }
+
+  handoffInterval = setInterval(scanHandoffFiles, 2500)
+  if (typeof handoffInterval.unref === 'function') handoffInterval.unref()
 }
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -253,11 +512,17 @@ export async function dispatchWorkItem(workItemId) {
   // Instrução em UMA linha: num terminal interativo cada quebra de linha viraria um Enter e enviaria
   // o prompt picado, em várias submissões.
   const runtimeId = runtimeIdForAgent(agent)
+  const connectedHint = runtimeId !== 'powershell'
+    ? buildConnectedAgentsHint(agent, snapshot.agents, snapshot.connections)
+    : ''
   // O PowerShell digita a instrução como COMANDO: o pedido do marcador só vale para CLIs de IA.
-  // Sessão nova de um agente que já tinha histórico: a IA é orientada a ler a memória viva no primeiro turno.
-  const resumeNote = created && hadContext && runtimeId !== 'powershell' ? buildResumeNote(agent.id) : ''
-  if (resumeNote) syncMemoryFile(agent.id)
-  const instruction = [resumeNote, agent.prompt, `Tarefa: ${item.title}`, runtimeId === 'powershell' ? '' : COMPLETION_INSTRUCTION]
+  // Sessão nova de um agente que já tinha histórico ou conexões: a IA é orientada a ler a memória viva.
+  const resumeNote = created && (hadContext || Boolean(connectedHint)) && runtimeId !== 'powershell'
+    ? buildResumeNote(agent.id, connectedHint)
+    : connectedHint
+  syncAllMemoryFiles()
+  const specText = item.description && item.description.trim() ? `Especificação da tarefa: ${item.description.trim()}` : ''
+  const instruction = [resumeNote, agent.prompt, `Tarefa: ${item.title}`, specText, runtimeId === 'powershell' ? '' : COMPLETION_INSTRUCTION]
     .filter(Boolean)
     .join(' ')
     .replace(/\s*[\r\n]+\s*/g, ' ')
@@ -267,6 +532,7 @@ export async function dispatchWorkItem(workItemId) {
   if (created) await waitForSessionReady(sessionId)
 
   const closedMessage = 'A sessão do agente foi encerrada antes de receber a tarefa.'
+  markInjectedPrompt(sessionId, instruction)
   if (!writeToSession(sessionId, instruction)) throw new Error(closedMessage)
   // Enter em escrita separada: TUIs tratam "texto + Enter" colados como colagem, não como envio.
   await delay(200)
@@ -294,8 +560,7 @@ export function canDelegate(sourceId, targetId) {
 
 // --- Conclusao da tarefa ----------------------------------------------------------
 // Chamada pelo usuario (mover o card para "review") ou pela deteccao automatica (E13, acima), que
-// passa `auto: true`. A deteccao e heuristica e AINDA NAO foi validada com uma CLI real autenticada.
-// Um modo nao interativo (prompt unico + exit code/JSON) seria uma alternativa mais confiavel (F1).
+// passa `auto: true`.
 export async function completeWorkItem(workItemId, { result, error, auto = false, reason } = {}) {
   cancelTaskMonitorsFor(workItemId) // conclusão manual (ou automática): para de observar a tarefa
   const status = error ? 'failed' : 'review'
@@ -310,6 +575,20 @@ export async function completeWorkItem(workItemId, { result, error, auto = false
     if (appendAgentMemory(item.assigneeId, formatMemoryEntry({ title: item.title, result, error }))) syncMemoryFile(item.assigneeId)
     const stillBusy = snap.workItems.some((w) => w.assigneeId === item.assigneeId && w.status === 'doing')
     if (!stillBusy) patchAgent(item.assigneeId, { status: 'idle', task: '' })
+
+    // E15: se o agente que concluiu a tarefa tem agentes conectados a jusante (source -> target) e
+    // ainda não encaminhou mensagem nos últimos 15s, encaminha automaticamente o resultado para revisão/continuidade.
+    if (!error && result && Date.now() - (lastAgentForwardAt.get(item.assigneeId) ?? 0) > 15000) {
+      const outgoing = snap.connections.filter((c) => c.source === item.assigneeId)
+      for (const conn of outgoing) {
+        void sendAgentMessage(
+          item.assigneeId,
+          conn.target,
+          `Tarefa concluída ("${item.title}"): ${String(result).slice(0, 600)}`,
+          { reason: 'conclusão de tarefa' },
+        )
+      }
+    }
   }
 
   const snapshot = getWorkspaceSnapshot()

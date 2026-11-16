@@ -16,6 +16,7 @@ export type ModalName = 'create' | 'edit' | 'manager' | 'commands' | 'settings' 
 
 export interface WorkItemInput {
   title: string
+  description?: string
   status: WorkStatus
   priority: WorkPriority
   assigneeId?: string
@@ -61,6 +62,7 @@ interface WorkspaceValue {
   setShowMinimap: (show: boolean) => void
   setAgentPosition: (id: string, x: number, y: number) => void
   addConnection: (source: string, target: string) => void
+  removeConnection: (id: string) => void
   createAgent: (input: NewAgentInput) => void
   delegateToManager: (objective: string) => void
   togglePause: (id: string) => void
@@ -86,7 +88,7 @@ interface WorkspaceValue {
   resetDemo: () => void
   clearWorkspace: () => Promise<void>
   moveWorkItem: (id: string, status: WorkStatus) => void
-  addWorkItem: (input: { title: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority'] }) => void
+  addWorkItem: (input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority'] }) => void
   addGoal: (input: { title: string; description: string }) => void
   addProject: (input: { name: string; path: string; description: string }) => void
   setActiveProject: (id: string) => void
@@ -306,6 +308,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (serviceOnline) void api.createConnection(conn).then(applySnapshot)
     toast.success('Conexão criada no organograma')
   }, [connections, agents, setConnections, addEvent, serviceOnline, applySnapshot])
+
+  const removeConnection = useCallback((id: string) => {
+    if (!id) return
+    setConnections((current) => current.filter((item) => item.id !== id))
+    if (serviceOnline) void api.deleteConnection(id).then(applySnapshot)
+    toast.success('Conexão removida do organograma')
+  }, [setConnections, serviceOnline, applySnapshot])
 
   const createAgent = useCallback((input: NewAgentInput) => {
     const slug = input.name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-')
@@ -565,7 +574,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (serviceOnline) void api.patchWorkItem(id, { status }).then(applySnapshot)
   }, [setWorkItems, serviceOnline, applySnapshot])
 
-  const addWorkItem = useCallback((input: { title: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority'] }) => {
+  const addWorkItem = useCallback((input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority'] }) => {
     const item: WorkItem = { id: crypto.randomUUID(), status: 'todo' as const, ...input }
     setWorkItems((current) => [...current, item])
     if (serviceOnline) void api.createWorkItem(item).then(applySnapshot)
@@ -856,7 +865,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     agents, connections, events, selectedId, modal, terminalOpen, terminalExpanded, terminalLines,
     showGrid, showMinimap, goals, workItems, projects, activeProject, cliRuntimes,
     setSelectedId, setModal, setTerminalOpen, setTerminalExpanded, setShowGrid, setShowMinimap,
-    setAgentPosition, addConnection, createAgent, delegateToManager, togglePause, removeAgent,
+    setAgentPosition, addConnection, removeConnection, createAgent, delegateToManager, togglePause, removeAgent,
     runCommand, sendRawKey, resizeAgentSession, getRawOutput, subscribeRawOutput, clearTerminal, resetDemo, clearWorkspace,
     moveWorkItem, addWorkItem, addGoal, addProject, setActiveProject,
     checkCli, installCli, toggleCliApproved,

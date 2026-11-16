@@ -144,8 +144,9 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .react-flow__pane { cursor: grab; }
 .react-flow__pane:active { cursor: grabbing; }
 .react-flow__node { font-family: var(--font-sans); }
-.react-flow__edge-path { stroke: #62594e; stroke-width: 1.15; }
-.react-flow__edge.flow-edge--active .react-flow__edge-path { stroke: var(--accent-warm); stroke-width: 1.35; }
+.react-flow__edge-path { stroke: #4d9aff; stroke-width: 1.75; stroke-dasharray: 6 4; cursor: pointer; }
+.react-flow__edge.flow-edge--active .react-flow__edge-path { stroke: var(--accent-warm); stroke-width: 2; stroke-dasharray: 6 4; }
+.react-flow__edge:hover .react-flow__edge-path { stroke-width: 2.5; filter: drop-shadow(0 0 4px rgba(77, 154, 255, 0.55)); }
 .react-flow .react-flow__edge .react-flow__edge-text { fill: var(--text-secondary); font-family: var(--font-mono); font-size: 8px; }
 .react-flow .react-flow__edge .react-flow__edge-textbg { fill: var(--background); }
 .react-flow__connection-path { stroke: var(--accent-warm); }
@@ -199,8 +200,14 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .agent-node__footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; color: var(--text-secondary); font-family: var(--font-mono); font-size: 8px; }
 .agent-node__progress { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--border-subtle); overflow: hidden; border-radius: 0 0 6px 6px; }
 .agent-node__progress span { display: block; height: 100%; background: var(--accent-warm); transition: width 250ms ease; }
-.agent-handle { width: 8px !important; height: 8px !important; border: 1px solid var(--accent-warm) !important; background: var(--background) !important; opacity: 0; transition: opacity 150ms ease; }
+.agent-handle {
+  width: 11px !important; height: 11px !important;
+  border: 2px solid var(--accent) !important; background: var(--background) !important;
+  border-radius: 50% !important; opacity: .55; cursor: crosshair !important;
+  transition: opacity 150ms ease, transform 150ms ease, background 150ms ease, border-color 150ms ease;
+}
 .agent-node:hover .agent-handle, .agent-node.is-selected .agent-handle { opacity: 1; }
+.agent-handle:hover { transform: scale(1.35); background: var(--accent) !important; border-color: #fff !important; }
 
 .inspector { min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--border-subtle); background: oklch(0.22 0.005 70); overflow: hidden; z-index: 20; }
 .inspector-heading { height: 45px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 15px 0 18px; border-bottom: 1px solid var(--border-subtle); }
@@ -642,3 +649,21 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .project-card__header-end { display: flex; align-items: center; gap: 6px; }
 .work-card__invalid { margin: 6px 0 0; color: oklch(0.72 0.11 42); font-size: 9px; line-height: 1.45; }
 .form-note { margin: 12px 22px 0; color: var(--text-secondary); font-size: 10px; line-height: 1.5; }
+
+/* ===== E15: arrastar tarefas (Kanban DnD) e especificação da tarefa ===== */
+.work-column { transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease; }
+.work-column--drag-over {
+  border-color: var(--accent);
+  background: oklch(0.245 0.02 250);
+  box-shadow: inset 0 0 0 1px oklch(0.66 0.15 245 / .35);
+}
+.work-card[draggable="true"] { cursor: grab; transition: opacity 140ms ease, transform 140ms ease, border-color 140ms ease; }
+.work-card[draggable="true"]:hover { border-color: var(--border-strong); }
+.work-card[draggable="true"]:active { cursor: grabbing; }
+.work-card--dragging { opacity: .45; transform: scale(.98); border-style: dashed; border-color: var(--accent); }
+.work-card__grip { display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); cursor: grab; }
+.work-card__desc {
+  margin: 6px 0 0; font-size: 10px; line-height: 1.45; color: var(--text-secondary);
+  white-space: pre-wrap; word-break: break-word;
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+}

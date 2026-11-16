@@ -116,9 +116,32 @@ export function memoryRelativePath(agentId) {
   return `.vertice/memory/${safeFileName(agentId)}.md`
 }
 
-/** Nota de UMA linha que orienta a IA a ler a memória (uma quebra de linha viraria Enter no terminal). */
-export function buildResumeNote(agentId) {
-  return `Retomando o trabalho: leia o arquivo ${memoryRelativePath(agentId)} (sua memória viva: papel, tarefas já concluídas e a última conversa) e use-o como contexto antes de continuar.`
+/** Nota de UMA linha que orienta a IA a ler a memória e conexões (uma quebra de linha viraria Enter no terminal). */
+export function buildResumeNote(agentId, connectedHint = '') {
+  const base = `Contexto do agente Vértice: leia o arquivo ${memoryRelativePath(agentId)} (seu papel, instrução de sistema, agentes conectados, tarefas concluídas e última conversa) e siga suas diretrizes.`
+  return connectedHint ? `${base} ${connectedHint}` : base
+}
+
+/** Resumo em UMA linha dos agentes conectados no organograma e como acioná-los pelo terminal. */
+export function buildConnectedAgentsHint(agent, allAgents = [], connections = []) {
+  if (!agent) return ''
+  const outgoing = connections
+    .filter((c) => c.source === agent.id)
+    .map((c) => allAgents.find((a) => a.id === c.target))
+    .filter(Boolean)
+  const incoming = connections
+    .filter((c) => c.target === agent.id)
+    .map((c) => allAgents.find((a) => a.id === c.source))
+    .filter(Boolean)
+  if (!outgoing.length && !incoming.length) return ''
+  const parts = []
+  if (incoming.length) {
+    parts.push(`Você recebe demandas de: ${incoming.map((a) => `${a.name} (${a.role})`).join(', ')}.`)
+  }
+  if (outgoing.length) {
+    parts.push(`Agentes conectados para quem você pode enviar saída/tarefas: ${outgoing.map((a) => `${a.name} (${a.role})`).join(', ')}. Para mandar qualquer saída ou tarefa para um agente conectado, escreva em uma linha sozinha a tag PARA seguida de dois-pontos e o nome do agente entre colchetes, seguido da mensagem em uma única linha.`)
+  }
+  return parts.join(' ')
 }
 
 export function formatMemoryEntry({ title, result, error, date = new Date() }) {
@@ -129,8 +152,37 @@ export function formatMemoryEntry({ title, result, error, date = new Date() }) {
   return `[${when}] ${error ? 'Tarefa falhou' : 'Tarefa concluída'}: ${title} → ${summary}`
 }
 
-export function buildMemoryMarkdown({ agent, memory, transcript }) {
+export function buildMemoryMarkdown({ agent, memory, transcript, allAgents = [], connections = [] }) {
   const tail = String(transcript ?? '').slice(-6000).trim()
+  const outgoing = connections
+    .filter((c) => c.source === agent.id)
+    .map((c) => allAgents.find((a) => a.id === c.target))
+    .filter(Boolean)
+  const incoming = connections
+    .filter((c) => c.target === agent.id)
+    .map((c) => allAgents.find((a) => a.id === c.source))
+    .filter(Boolean)
+  const connectionLines = []
+  if (incoming.length) {
+    connectionLines.push('### Quem envia demandas para você (Supervisores / Origem):')
+    for (const src of incoming) {
+      connectionLines.push(`- **${src.name}** (ID: \`${src.id}\` · Papel: ${src.role}) — Instrução: ${src.prompt || '(sem instrução)'}`)
+    }
+  }
+  if (outgoing.length) {
+    if (connectionLines.length) connectionLines.push('')
+    connectionLines.push('### Agentes conectados que recebem sua saída / delegação (Destino):')
+    for (const dst of outgoing) {
+      connectionLines.push(`- **${dst.name}** (ID: \`${dst.id}\` · Papel: ${dst.role} · Memória: \`${memoryRelativePath(dst.id)}\`) — Instrução: ${dst.prompt || '(sem instrução)'}`)
+    }
+    connectionLines.push('')
+    connectionLines.push('### Como enviar mensagem ou saída para um agente conectado:')
+    connectionLines.push('Sempre que terminar uma etapa que deva seguir para o próximo agente conectado (ou quando o usuário pedir para mandar a saída para outro agente), escreva em uma linha sozinha no terminal:')
+    connectionLines.push('`[PARA: NomeDoAgente] sua mensagem, saída ou instrução completa em uma única linha`')
+    connectionLines.push(`Exemplo real para sua conexão: \`[PARA: ${outgoing[0].name}] Segue minha saída para você revisar/executar: ...\``)
+    connectionLines.push('O Vértice intercepta essa linha automaticamente, abre o terminal do agente destino e entrega a mensagem para ele executar na hora.')
+  }
+
   return [
     `# Memória viva — ${agent.name}`,
     '',
@@ -141,6 +193,9 @@ export function buildMemoryMarkdown({ agent, memory, transcript }) {
     '',
     '## Instrução de sistema',
     agent.prompt || '(não definida)',
+    '',
+    '## Equipe e Conexões no Organograma',
+    connectionLines.length ? connectionLines.join('\n') : '(nenhum outro agente conectado a este no momento)',
     '',
     '## Tarefas e contexto acumulado',
     (memory ?? '').trim() || '(nenhuma tarefa concluída ainda)',

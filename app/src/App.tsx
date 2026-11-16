@@ -5,7 +5,7 @@ import { Toaster } from 'sonner'
 import '@fontsource-variable/geist'
 import '@fontsource-variable/geist-mono'
 import { Brand } from '@/components/Brand'
-import { CreateAgentDialog, EditAgentDialog, ManagerDialog, RemoveAgentDialog } from '@/components/AgentDialogs'
+import { CreateAgentDialog, EditAgentDialog, RemoveAgentDialog } from '@/components/AgentDialogs'
 import { CommandPalette } from '@/components/CommandPalette'
 import { Modal } from '@/components/Modal'
 import { WorkspaceProvider, useWorkspace } from '@/store/workspace'
@@ -28,7 +28,7 @@ function Shell() {
   const navigate = useNavigate()
   const {
     agents, workItems, modal, selectedId, activeProject, setModal, setTerminalOpen, setShowGrid, setShowMinimap,
-    createAgent, updateAgent, delegateToManager, removeAgent, resetDemo, clearWorkspace, showGrid, showMinimap,
+    createAgent, updateAgent, removeAgent, resetDemo, clearWorkspace, showGrid, showMinimap,
     promptTemplates, savePromptTemplate, deletePromptTemplate,
   } = workspace
   const selectedAgent = selectedId ? agents.find((agent) => agent.id === selectedId) : undefined
@@ -46,8 +46,6 @@ function Shell() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
         setModal('commands')
-      } else if (!isTyping && !modal && event.key.toLowerCase() === 'g') {
-        setModal('manager')
       } else if (!isTyping && !modal && event.key.toLowerCase() === 't') {
         goTerminal()
       }
@@ -129,12 +127,10 @@ function Shell() {
           onSave={(input) => updateAgent(selectedAgent.id, input)}
         />
       )}
-      {modal === 'manager' && <ManagerDialog serviceOnline={workspace.serviceOnline} onClose={() => setModal(null)} onDelegate={delegateToManager} />}
       {modal === 'commands' && (
         <CommandPalette
           onClose={() => setModal(null)}
           onCreate={() => setModal('create')}
-          onManager={() => setModal('manager')}
           onTerminal={goTerminal}
           onFit={() => navigate('/organograma')}
           onReset={resetDemo}

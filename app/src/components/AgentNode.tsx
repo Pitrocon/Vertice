@@ -18,7 +18,10 @@ export function AgentNode({ data, selected }: NodeProps<AgentFlowNode>) {
 
   return (
     <div className={`agent-node agent-node--${agent.kind} agent-node--${agent.status} ${selected ? 'is-selected' : ''}`}>
-      <Handle type="target" position={Position.Top} className="agent-handle" />
+      <Handle id="top" type="source" position={Position.Top} className="agent-handle agent-handle--top" />
+      <Handle id="right" type="source" position={Position.Right} className="agent-handle agent-handle--right" />
+      <Handle id="bottom" type="source" position={Position.Bottom} className="agent-handle agent-handle--bottom" />
+      <Handle id="left" type="source" position={Position.Left} className="agent-handle agent-handle--left" />
       <div className="agent-node__topline">
         <span className="agent-node__icon"><Icon size={16} strokeWidth={1.7} /></span>
         <span className={`status-dot status-dot--${agent.status}`} />
@@ -32,7 +35,6 @@ export function AgentNode({ data, selected }: NodeProps<AgentFlowNode>) {
         <span>{agent.runtime}</span>
         <span>{statusLabels[agent.status]}</span>
       </div>
-      <Handle type="source" position={Position.Bottom} className="agent-handle" />
     </div>
   )
 }

@@ -62,6 +62,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS work_items (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'todo',
     assignee_id TEXT,
     goal_id TEXT,
@@ -96,7 +97,7 @@ db.exec(`
 // ---------------------------------------------------------------------------
 // Migracoes idempotentes baseadas em meta.schema_version. Nunca apagam dados.
 // ---------------------------------------------------------------------------
-const SCHEMA_VERSION = 4
+const SCHEMA_VERSION = 5
 
 function getSchemaVersion() {
   const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()
@@ -170,6 +171,18 @@ function runMigrations() {
   if (current < 4) {
     for (const [name, type] of [['memory', 'TEXT'], ['last_transcript', 'TEXT']]) {
       if (!columnExists('agents', name)) db.exec(`ALTER TABLE agents ADD COLUMN ${name} ${type}`)
+    }
+  }
+
+  // v5 (E15) -> especificação detalhada das tarefas (work_items.description) e runtimes aprovados completos.
+  if (current < 5) {
+    if (!columnExists('work_items', 'description')) {
+      db.exec("ALTER TABLE work_items ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+    }
+    const existingApproved = getSetting('approvedRuntimes')
+    if (Array.isArray(existingApproved)) {
+      const merged = Array.from(new Set([...existingApproved, ...DEFAULT_SETTINGS.approvedRuntimes]))
+      setSetting('approvedRuntimes', merged)
     }
   }
 
@@ -340,6 +353,7 @@ function mapGoal(row) {
 function mapWorkItem(row) {
   return {
     id: row.id, title: row.title, status: row.status, priority: row.priority,
+    ...(row.description ? { description: row.description } : {}),
     ...(row.assignee_id ? { assigneeId: row.assignee_id } : {}),
     ...(row.goal_id ? { goalId: row.goal_id } : {}),
     ...(row.parent_task_id ? { parentTaskId: row.parent_task_id } : {}),
@@ -589,6 +603,27 @@ export function releaseProjectWorkspace(projectId) {
 export function createConnection({ id, source, target, label, active }) {
   db.prepare('INSERT OR REPLACE INTO connections (id, source, target, label, active) VALUES (?, ?, ?, ?, ?)')
     .run(id, source, target, label ?? 'vincula', active ? 1 : 0)
+  // Se o agente destino ainda não tinha supervisor (e não cria ciclo), vincula source como supervisor.
+  const targetRow = db.prepare('SELECT created_by FROM agents WHERE id = ?').get(target)
+  if (targetRow && !targetRow.created_by && !wouldCreateCycle(target, source)) {
+    db.prepare('UPDATE agents SET created_by = ? WHERE id = ?').run(source, target)
+  }
+}
+
+export function deleteConnection(id) {
+  const conn = db.prepare('SELECT * FROM connections WHERE id = ?').get(id)
+  if (!conn) return false
+  db.prepare('DELETE FROM connections WHERE id = ?').run(id)
+  const targetRow = db.prepare('SELECT created_by FROM agents WHERE id = ?').get(conn.target)
+  if (targetRow && targetRow.created_by === conn.source) {
+    db.prepare('UPDATE agents SET created_by = NULL WHERE id = ?').run(conn.target)
+  }
+  return true
+}
+
+export function setConnectionActive(source, target, active) {
+  db.prepare('UPDATE connections SET active = ? WHERE source = ? AND target = ?')
+    .run(active ? 1 : 0, source, target)
 }
 
 export function createGoal({ id, title, description }) {
@@ -596,28 +631,29 @@ export function createGoal({ id, title, description }) {
     .run(id, title, description ?? '')
 }
 
-export function createWorkItem({ id, title, status, assigneeId, goalId, priority, parentTaskId, dependsOn, createdBy }) {
+export function createWorkItem({ id, title, description, status, assigneeId, goalId, priority, parentTaskId, dependsOn, createdBy }) {
   const now = new Date().toISOString()
   db.prepare(`
-    INSERT INTO work_items (id, title, status, assignee_id, goal_id, priority, parent_task_id, depends_on, created_by, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO work_items (id, title, description, status, assignee_id, goal_id, priority, parent_task_id, depends_on, created_by, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    id, title, status ?? 'todo', assigneeId ?? null, goalId ?? null, priority ?? 'media',
+    id, title, description ?? '', status ?? 'todo', assigneeId ?? null, goalId ?? null, priority ?? 'media',
     parentTaskId ?? null,
     dependsOn ? JSON.stringify(dependsOn) : null,
     createdBy ?? null, now, now
   )
 }
 
-export function patchWorkItem(id, { status, assigneeId, goalId, priority, title, result, error }) {
+export function patchWorkItem(id, { status, assigneeId, goalId, priority, title, description, result, error }) {
   const current = db.prepare('SELECT * FROM work_items WHERE id = ?').get(id)
   if (!current) return false
   db.prepare(`
     UPDATE work_items
-    SET title = ?, status = ?, assignee_id = ?, goal_id = ?, priority = ?, result = ?, error = ?, updated_at = ?
+    SET title = ?, description = ?, status = ?, assignee_id = ?, goal_id = ?, priority = ?, result = ?, error = ?, updated_at = ?
     WHERE id = ?
   `).run(
     title ?? current.title,
+    description !== undefined ? description : (current.description ?? ''),
     status ?? current.status,
     assigneeId !== undefined ? assigneeId : current.assignee_id,
     goalId !== undefined ? goalId : current.goal_id,

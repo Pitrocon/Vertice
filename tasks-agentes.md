@@ -377,3 +377,15 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
   AppContainer ou sandbox nativa da CLI), documentando o nível real de garantia na UI e no `AGENTS.md`.
 
 
+
+---
+
+## E15 — Retorno do teste em outra máquina (12/11/2026) — concluído
+
+- [x] Node.js sem janela de administrador (zip oficial em `%LOCALAPPDATA%\Programs\nodejs`).
+- [x] CLIs funcionando fora do Vértice (`syncUserCliPath()` → PATH do usuário).
+- [x] Agentes conectados se comunicam: contexto + mapa de conexões no início da sessão, roteador `[PARA: ...]`, leitura de `.vertice/handoff*.md`, repasse do resultado ao concluir.
+- [x] Organograma: 4 pontos de conexão, linhas curvas tracejadas, remover conexão (duplo-clique/Delete).
+- [x] Work: campo "Especificação da tarefa" + arrastar e soltar entre colunas.
+- [x] Removidos "Nova delegação" (Organograma) e "Delegar ao Gerente" (Agentes).
+- **Pendente de validação real:** repetir o teste AAAA → BBBBBBBBBBB numa máquina com CLIs autenticadas.

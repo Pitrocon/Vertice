@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowLeft, ArrowRight, Pencil, Plus, Save, Target, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, GripVertical, Pencil, Plus, Save, Target, Trash2 } from 'lucide-react'
 import { Modal } from '@/components/Modal'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { useWorkspace, type WorkItemInput } from '@/store/workspace'
@@ -24,9 +24,12 @@ export function WorkPage() {
     dispatchWorkItem, completeWorkItem, serviceOnline,
   } = useWorkspace()
   const [modal, setModal] = useState<WorkModal>(null)
+  const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [dragOverStatus, setDragOverStatus] = useState<WorkStatus | null>(null)
   const close = () => setModal(null)
 
   const handleMove = (item: WorkItem, next: WorkStatus) => {
+    if (columnOf(item) === next) return
     // Quando online, a movimentação dispara a execução real correspondente.
     if (serviceOnline && next === 'doing' && item.assigneeId) {
       void dispatchWorkItem(item.id)
@@ -37,6 +40,16 @@ export function WorkPage() {
       return
     }
     moveWorkItem(item.id, next)
+  }
+
+  const handleDropOnColumn = (event: React.DragEvent, targetStatus: WorkStatus) => {
+    event.preventDefault()
+    setDragOverStatus(null)
+    const droppedId = draggingId || event.dataTransfer.getData('text/vertice-work-id') || event.dataTransfer.getData('text/plain')
+    setDraggingId(null)
+    if (!droppedId) return
+    const item = workItems.find((w) => w.id === droppedId)
+    if (item) handleMove(item, targetStatus)
   }
 
   const goalProgress = (goalId: string) => {
@@ -53,7 +66,7 @@ export function WorkPage() {
         <div>
           <span className="section-label">TRABALHO</span>
           <h1>Work</h1>
-          <p>{workItems.filter((i) => i.status !== 'done').length} tarefas abertas · {goals.length} metas ativas</p>
+          <p>{workItems.filter((i) => i.status !== 'done').length} tarefas abertas · {goals.length} metas ativas · arraste os cards entre as colunas</p>
         </div>
         <div className="page-header__actions">
           <button className="button button--secondary" onClick={() => setModal({ kind: 'goal' })}><Target size={15} /> Nova meta</button>
@@ -80,7 +93,21 @@ export function WorkPage() {
 
       <section className="work-board">
         {workStatusOrder.map((status) => (
-          <div key={status} className="work-column">
+          <div
+            key={status}
+            className={`work-column ${dragOverStatus === status ? 'work-column--drag-over' : ''}`}
+            onDragOver={(event) => {
+              event.preventDefault()
+              event.dataTransfer.dropEffect = 'move'
+              if (dragOverStatus !== status) setDragOverStatus(status)
+            }}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setDragOverStatus((current) => (current === status ? null : current))
+              }
+            }}
+            onDrop={(event) => handleDropOnColumn(event, status)}
+          >
             <header className="work-column__header">
               <span>{workStatusLabels[status]}</span>
               <b>{itemsIn(status).length}</b>
@@ -90,6 +117,17 @@ export function WorkPage() {
                 <WorkCard
                   key={item.id}
                   item={item}
+                  isDragging={draggingId === item.id}
+                  onDragStart={(event) => {
+                    setDraggingId(item.id)
+                    event.dataTransfer.effectAllowed = 'move'
+                    event.dataTransfer.setData('text/vertice-work-id', item.id)
+                    event.dataTransfer.setData('text/plain', item.id)
+                  }}
+                  onDragEnd={() => {
+                    setDraggingId(null)
+                    setDragOverStatus(null)
+                  }}
                   onMove={(next) => handleMove(item, next)}
                   onEdit={() => setModal({ kind: 'issue', item })}
                   onDelete={() => setModal({ kind: 'delete-issue', item })}
@@ -97,7 +135,7 @@ export function WorkPage() {
                   goalTitle={item.goalId ? goals.find((g) => g.id === item.goalId)?.title : undefined}
                 />
               ))}
-              {itemsIn(status).length === 0 && <div className="work-column__empty">Nenhuma tarefa</div>}
+              {itemsIn(status).length === 0 && <div className="work-column__empty">{dragOverStatus === status ? 'Solte a tarefa aqui' : 'Nenhuma tarefa'}</div>}
             </div>
           </div>
         ))}
@@ -124,15 +162,33 @@ export function WorkPage() {
   )
 }
 
-function WorkCard({ item, agentName, goalTitle, onMove, onEdit, onDelete }: { item: WorkItem; agentName?: string; goalTitle?: string; onMove: (status: WorkStatus) => void; onEdit: () => void; onDelete: () => void }) {
+function WorkCard({ item, agentName, goalTitle, isDragging, onDragStart, onDragEnd, onMove, onEdit, onDelete }: {
+  item: WorkItem
+  agentName?: string
+  goalTitle?: string
+  isDragging?: boolean
+  onDragStart: (event: React.DragEvent) => void
+  onDragEnd: () => void
+  onMove: (status: WorkStatus) => void
+  onEdit: () => void
+  onDelete: () => void
+}) {
   const column = columnOf(item)
   const index = workStatusOrder.indexOf(column)
   // Antes de aprovar, o gestor vê o que a IA entregou (últimas linhas do resultado).
   const resultPreview = (item.status === 'review' || item.status === 'done') && item.result ? summarizeResult(item.result) : ''
   return (
-    <article className="work-card">
+    <article
+      className={`work-card ${isDragging ? 'work-card--dragging' : ''}`}
+      draggable
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+    >
       <div className="work-card__top">
-        <span className={`priority-chip priority-chip--${item.priority}`}>{priorityLabels[item.priority] ?? item.priority}</span>
+        <span className="work-card__grip" title="Arraste para outra coluna">
+          <GripVertical size={12} />
+          <span className={`priority-chip priority-chip--${item.priority}`}>{priorityLabels[item.priority] ?? item.priority}</span>
+        </span>
         <div className="work-card__moves">
           <button className="icon-button icon-button--small" onClick={onEdit} title="Editar tarefa" aria-label={`Editar a tarefa ${item.title}`}><Pencil size={12} /></button>
           <button className="icon-button icon-button--small icon-button--danger" onClick={onDelete} title="Excluir tarefa" aria-label={`Excluir a tarefa ${item.title}`}><Trash2 size={12} /></button>
@@ -141,6 +197,7 @@ function WorkCard({ item, agentName, goalTitle, onMove, onEdit, onDelete }: { it
         </div>
       </div>
       <strong>{item.title}</strong>
+      {item.description && <p className="work-card__desc">{item.description}</p>}
       {column !== item.status && <p className="work-card__invalid">Status "{item.status}" não reconhecido · edite a tarefa para corrigir.</p>}
       {resultPreview && <p className="work-card__result" title={item.result}>→ {resultPreview}</p>}
       <footer>
@@ -160,11 +217,12 @@ function summarizeResult(result: string) {
 function IssueDialog({ item, onClose, onCreate, onSave }: {
   item?: WorkItem
   onClose: () => void
-  onCreate: (input: { title: string; assigneeId?: string; goalId?: string; priority: WorkPriority }) => void
+  onCreate: (input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkPriority }) => void
   onSave: (id: string, input: WorkItemInput) => Promise<boolean>
 }) {
   const { agents, goals } = useWorkspace()
   const [title, setTitle] = useState(item?.title ?? '')
+  const [description, setDescription] = useState(item?.description ?? '')
   const [assigneeId, setAssigneeId] = useState(item?.assigneeId ?? '')
   const [goalId, setGoalId] = useState(item?.goalId ?? '')
   const [priority, setPriority] = useState<WorkPriority>(item?.priority ?? 'media')
@@ -176,7 +234,13 @@ function IssueDialog({ item, onClose, onCreate, onSave }: {
     event.preventDefault()
     setSubmitted(true)
     if (!title.trim() || saving) return
-    const base = { title: title.trim(), assigneeId: assigneeId || undefined, goalId: goalId || undefined, priority }
+    const base = {
+      title: title.trim(),
+      description: description.trim(),
+      assigneeId: assigneeId || undefined,
+      goalId: goalId || undefined,
+      priority,
+    }
     if (!item) {
       onCreate(base)
       onClose()
@@ -200,8 +264,16 @@ function IssueDialog({ item, onClose, onCreate, onSave }: {
             <label>Status<select value={status} onChange={(e) => setStatus(e.target.value as WorkStatus)}>{workStatusOrder.map((value) => <option key={value} value={value}>{workStatusLabels[value]}</option>)}</select></label>
           )}
         </div>
+        <label className="prompt-field">
+          Especificação da tarefa
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Descreva os detalhes da tarefa, instruções para o agente, entradas e critérios de entrega…"
+          />
+        </label>
         <footer className="modal-footer">
-          {item && <span>Mudar o status aqui não inicia a execução; para despachar ao agente, use a seta do card.</span>}
+          {item && <span>Você também pode arrastar os cards entre as colunas do quadro Work.</span>}
           <button className="button button--secondary" type="button" onClick={onClose}>Cancelar</button>
           <button className="button button--primary" type="submit" disabled={saving}>{item ? <><Save size={15} /> Salvar alterações</> : <><Plus size={15} /> Criar tarefa</>}</button>
         </footer>

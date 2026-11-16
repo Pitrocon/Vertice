@@ -55,6 +55,8 @@ export interface Goal {
 export interface WorkItem {
   id: string
   title: string
+  /** Especificação detalhada da tarefa (instruções e critérios de aceite). */
+  description?: string
   status: WorkStatus
   assigneeId?: string
   goalId?: string
