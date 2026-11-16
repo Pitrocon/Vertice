@@ -11,6 +11,7 @@ import { detectRuntimes, RUNTIME_CATALOG, syncUserCliPath } from './runtimes.js'
 import { writeToSession, resizeSession, killSession, listActiveSessions } from './sessions.js'
 import { assertSafeProjectPath, expandEnvVars, WorkspaceError } from './workspace.js'
 import { checkRequestOrigin, isFileOrigin, isLocalHost, isLocalOrigin, tokenFromRequest } from './security.js'
+import { describePolicyEffects, mergePolicyPatch } from './policies.js'
 import {
   configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName,
   launchAgentSession, flushAgentTranscript, clearAgentSession,
@@ -27,7 +28,7 @@ import {
   getAgent, setAgentMemory, clearAgentMemory, wouldCreateCycle, setAgentParent,
   deleteWorkItem, patchGoal, deleteGoal, patchProject, releaseProjectWorkspace,
   createConnection, getConnection, patchConnection, deleteConnection, createGoal, createWorkItem, patchWorkItem,
-  getSettings, getSetting, setSetting,
+  getSettings, getSetting, setSetting, getPolicies,
   listAllowedWorkspaces, addAllowedWorkspace, removeAllowedWorkspace,
 } from './db.js'
 
@@ -76,6 +77,7 @@ app.get('/api/catalog', (_req, res) => {
       headless: Boolean(runtime.headless),
       headlessSources: runtime.headless?.sources ?? [],
       sources: runtime.headless?.sources ?? [],
+      policyEffects: runtime.policyEffects ?? describePolicyEffects(runtime),
     })),
   })
 })
@@ -275,32 +277,44 @@ app.get('/api/settings', (_req, res) => {
 
 app.patch('/api/settings', (req, res) => {
   const { approvedRuntimes, policies, promptTemplates } = req.body ?? {}
-  if (approvedRuntimes !== undefined) {
-    if (!Array.isArray(approvedRuntimes)) return res.status(400).json({ error: 'approvedRuntimes deve ser uma lista' })
-    setSetting('approvedRuntimes', approvedRuntimes)
+  if (approvedRuntimes !== undefined && !Array.isArray(approvedRuntimes)) {
+    return res.status(400).json({ error: 'approvedRuntimes deve ser uma lista' })
   }
+
+  let nextPolicies = null
   if (policies !== undefined) {
-    if (typeof policies !== 'object' || policies === null) return res.status(400).json({ error: 'policies deve ser um objeto' })
-    setSetting('policies', policies)
+    const current = getPolicies({ recordOnInvalid: false })
+    const merged = mergePolicyPatch(current, policies)
+    if (merged.error) return res.status(400).json({ error: merged.error })
+    nextPolicies = merged.policies
   }
+
   // Biblioteca de prompts salvos: fica em `settings`, então sobrevive a "Limpar workspace".
+  let cleanedTemplates = null
   if (promptTemplates !== undefined) {
     if (!Array.isArray(promptTemplates) || promptTemplates.length > 100) {
       return res.status(400).json({ error: 'promptTemplates deve ser uma lista com até 100 itens' })
     }
-    const cleaned = []
+    cleanedTemplates = []
     for (const template of promptTemplates) {
       if (!template || !isFilledText(template.name) || !isFilledText(template.prompt)) {
         return res.status(400).json({ error: 'Cada prompt salvo precisa de nome e texto' })
       }
-      cleaned.push({
+      cleanedTemplates.push({
         id: typeof template.id === 'string' && template.id ? template.id : randomUUID(),
         name: template.name.trim().slice(0, 80),
         prompt: template.prompt.slice(0, 8000),
       })
     }
-    setSetting('promptTemplates', cleaned)
   }
+
+  if (approvedRuntimes !== undefined) setSetting('approvedRuntimes', approvedRuntimes)
+  if (nextPolicies !== null) {
+    setSetting('policies', nextPolicies)
+    syncAllMemoryFiles()
+  }
+  if (cleanedTemplates !== null) setSetting('promptTemplates', cleanedTemplates)
+
   recordEvent(null, promptTemplates !== undefined && approvedRuntimes === undefined && policies === undefined ? 'Biblioteca de prompts atualizada' : 'Políticas/aprovações atualizadas', 'system')
   res.json(broadcastSnapshot())
 })

@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
+import { POLICY_KEYS, describePolicyEffects } from './policies.js'
 
 // Diretório de manifestos declarativos: vertice/runtimes/<id>.json
 // (a partir de core/src/runtimes.js sobe dois níveis até a raiz do projeto).
@@ -38,6 +39,13 @@ const FALLBACK_CATALOG = [
         'https://code.claude.com/docs/en/permission-modes',
       ],
     },
+    policyFlags: {
+      allowNetwork: {
+        whenOff: ['--disallowedTools', 'WebFetch', 'WebSearch'],
+        effect: 'directive',
+        source: 'https://code.claude.com/docs/en/cli-reference',
+      },
+    },
   },
   {
     id: 'codex',
@@ -60,20 +68,28 @@ const FALLBACK_CATALOG = [
         'https://learn.chatgpt.com/docs/non-interactive-mode',
       ],
     },
+    policyFlags: {
+      allowNetwork: {
+        whenOff: ['--sandbox', 'workspace-write'],
+        effect: 'technical',
+        source: 'https://developers.openai.com/codex/sandbox',
+      },
+    },
   },
-  { id: 'kimi',        name: 'Kimi CLI',        kind: 'CLI de IA',    command: 'kimi',       versionArgs: ['--version'], sessionArgs: [], install: 'irm https://code.kimi.com/install.ps1 | iex',  http: null, authenticates: true,  order: 3, headless: null },
-  { id: 'glm',         name: 'GLM CLI (Z.ai)',  kind: 'CLI de IA',    command: 'zai',        versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @guizmo-ai/zai-cli',      http: null, authenticates: true,  order: 4, headless: null },
-  { id: 'antigravity', name: 'Antigravity CLI', kind: 'CLI de IA',    command: 'agy',        versionArgs: ['--version'], sessionArgs: [], install: 'irm https://antigravity.google/cli/install.ps1 | iex', http: null, authenticates: true, order: 5, headless: null },
-  { id: 'opencode',    name: 'OpenCode',        kind: 'CLI de IA',    command: 'opencode',   versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g opencode-ai',            http: null, authenticates: true,  order: 6, headless: null },
-  { id: 'ollama',      name: 'Ollama',          kind: 'Modelo local', command: 'ollama',     versionArgs: ['--version'], sessionArgs: [], install: 'winget install Ollama.Ollama --accept-source-agreements --accept-package-agreements',          http: 'http://localhost:11434/api/tags', authenticates: false, order: 7, headless: null },
-  { id: 'lmstudio',    name: 'LM Studio',       kind: 'Modelo local', command: 'lms',        versionArgs: ['version'],   sessionArgs: [], install: null,                                    http: 'http://localhost:1234/v1/models', authenticates: false, order: 8, headless: null },
-  { id: 'powershell',  name: 'PowerShell',      kind: 'Shell',        command: 'powershell', versionArgs: ['--version'], sessionArgs: ['-NoLogo'], install: null,                           http: null, authenticates: false, order: 9, headless: null },
+  { id: 'kimi',        name: 'Kimi CLI',        kind: 'CLI de IA',    command: 'kimi',       versionArgs: ['--version'], sessionArgs: [], install: 'irm https://code.kimi.com/install.ps1 | iex',  http: null, authenticates: true,  order: 3, headless: null, policyFlags: null },
+  { id: 'glm',         name: 'GLM CLI (Z.ai)',  kind: 'CLI de IA',    command: 'zai',        versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g @guizmo-ai/zai-cli',      http: null, authenticates: true,  order: 4, headless: null, policyFlags: null },
+  { id: 'antigravity', name: 'Antigravity CLI', kind: 'CLI de IA',    command: 'agy',        versionArgs: ['--version'], sessionArgs: [], install: 'irm https://antigravity.google/cli/install.ps1 | iex', http: null, authenticates: true, order: 5, headless: null, policyFlags: null },
+  { id: 'opencode',    name: 'OpenCode',        kind: 'CLI de IA',    command: 'opencode',   versionArgs: ['--version'], sessionArgs: [], install: 'npm install -g opencode-ai',            http: null, authenticates: true,  order: 6, headless: null, policyFlags: null },
+  { id: 'ollama',      name: 'Ollama',          kind: 'Modelo local', command: 'ollama',     versionArgs: ['--version'], sessionArgs: [], install: 'winget install Ollama.Ollama --accept-source-agreements --accept-package-agreements',          http: 'http://localhost:11434/api/tags', authenticates: false, order: 7, headless: null, policyFlags: null },
+  { id: 'lmstudio',    name: 'LM Studio',       kind: 'Modelo local', command: 'lms',        versionArgs: ['version'],   sessionArgs: [], install: null,                                    http: 'http://localhost:1234/v1/models', authenticates: false, order: 8, headless: null, policyFlags: null },
+  { id: 'powershell',  name: 'PowerShell',      kind: 'Shell',        command: 'powershell', versionArgs: ['--version'], sessionArgs: ['-NoLogo'], install: null,                           http: null, authenticates: false, order: 9, headless: null, policyFlags: null },
 ]
 
 const REQUIRED_FIELDS = ['id', 'name', 'kind', 'command', 'versionArgs', 'sessionArgs']
 const HEADLESS_OUTPUT_FORMATS = new Set(['claude-json', 'text'])
 const HEADLESS_MIN_TIMEOUT_MS = 60_000
 const HEADLESS_MAX_TIMEOUT_MS = 3_600_000
+const POLICY_EFFECT_KINDS = new Set(['technical', 'directive'])
 
 function isPlainObject(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
@@ -112,6 +128,50 @@ export function validateHeadlessBlock(block) {
   }
 }
 
+/**
+ * G11: valida e normaliza o bloco opcional `policyFlags` de um manifesto.
+ * Ignora entradas inválidas com `console.warn` sem derrubar o catálogo.
+ */
+export function validatePolicyFlags(raw, manifestName = 'manifesto') {
+  if (raw == null) return null
+  if (!isPlainObject(raw)) {
+    console.warn(`[runtimes] Bloco "policyFlags" inválido em ${manifestName}; ignorando flags de política.`)
+    return null
+  }
+
+  const out = {}
+  for (const [key, entry] of Object.entries(raw)) {
+    if (!POLICY_KEYS.includes(key)) {
+      console.warn(`[runtimes] Chave de política desconhecida "${key}" em policyFlags de ${manifestName}; ignorada.`)
+      continue
+    }
+    if (!isPlainObject(entry)) {
+      console.warn(`[runtimes] Entrada inválida para "${key}" em policyFlags de ${manifestName}; ignorada.`)
+      continue
+    }
+    const validWhenOff = Array.isArray(entry.whenOff)
+      && entry.whenOff.length > 0
+      && entry.whenOff.every((item) => typeof item === 'string' && item.trim().length > 0)
+    const validEffect = POLICY_EFFECT_KINDS.has(entry.effect)
+    const validSource = typeof entry.source === 'string'
+      && entry.source.startsWith('https://')
+      && entry.source.slice(8).trim().length > 0
+
+    if (!validWhenOff || !validEffect || !validSource) {
+      console.warn(`[runtimes] Configuração inválida para "${key}" em policyFlags de ${manifestName}; ignorada.`)
+      continue
+    }
+
+    out[key] = {
+      whenOff: [...entry.whenOff],
+      effect: entry.effect,
+      source: entry.source,
+    }
+  }
+
+  return Object.keys(out).length > 0 ? out : null
+}
+
 // G3: `authCheck` opcional do manifesto: arquivos de credencial (com %VARIAVEL%) e variáveis de ambiente
 // que indicam login feito. Só confere se EXISTEM; não lê o conteúdo nem valida o token.
 function normalizeAuthCheck(value) {
@@ -123,13 +183,21 @@ function normalizeAuthCheck(value) {
 }
 
 function cloneFallbackCatalog() {
-  return FALLBACK_CATALOG.map((entry) => ({
-    ...entry,
-    versionArgs: [...entry.versionArgs],
-    sessionArgs: [...entry.sessionArgs],
-    authCheck: normalizeAuthCheck(entry.authCheck),
-    headless: validateHeadlessBlock(entry.headless),
-  }))
+  return FALLBACK_CATALOG.map((entry) => {
+    const policyFlags = validatePolicyFlags(entry.policyFlags, entry.id)
+    const runtime = {
+      ...entry,
+      versionArgs: [...entry.versionArgs],
+      sessionArgs: [...entry.sessionArgs],
+      authCheck: normalizeAuthCheck(entry.authCheck),
+      headless: validateHeadlessBlock(entry.headless),
+      policyFlags,
+    }
+    return {
+      ...runtime,
+      policyEffects: describePolicyEffects(runtime),
+    }
+  })
 }
 
 // Lê e valida os manifestos declarativos. Entradas malformadas são ignoradas
@@ -154,7 +222,8 @@ export function loadCatalog(manifestsDir = MANIFESTS_DIR) {
       if (manifest.headless != null && !headless) {
         console.warn(`[runtimes] Bloco "headless" inválido no manifesto "${file}"; mantendo modo interativo.`)
       }
-      catalog.push({
+      const policyFlags = validatePolicyFlags(manifest.policyFlags, `"${file}"`)
+      const runtime = {
         id: manifest.id,
         name: manifest.name,
         kind: manifest.kind,
@@ -166,8 +235,11 @@ export function loadCatalog(manifestsDir = MANIFESTS_DIR) {
         authenticates: manifest.authenticates ?? false,
         authCheck: normalizeAuthCheck(manifest.authCheck),
         headless,
+        policyFlags,
         order: typeof manifest.order === 'number' ? manifest.order : 999,
-      })
+      }
+      runtime.policyEffects = describePolicyEffects(runtime)
+      catalog.push(runtime)
     } catch (error) {
       console.warn(`[runtimes] Falha ao ler manifesto "${file}": ${error.message}`)
     }
@@ -286,7 +358,11 @@ export async function detectRuntimes({ force = false } = {}) {
 
 async function runDetection() {
   const results = await Promise.all(RUNTIME_CATALOG.map(async (runtime) => {
-    const base = { ...runtime, headless: Boolean(runtime.headless) }
+    const base = {
+      ...runtime,
+      headless: Boolean(runtime.headless),
+      policyEffects: runtime.policyEffects ?? describePolicyEffects(runtime),
+    }
     const path = await where(runtime.command)
     if (!path) {
       // Modelos locais podem estar rodando como serviço mesmo sem CLI no PATH

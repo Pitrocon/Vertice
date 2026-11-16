@@ -1,11 +1,13 @@
 import { testDir, cleanup } from './helpers/env.js'
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import fc from 'fast-check'
 import { buildLegacyDb } from './helpers/legacy-db.js'
 import { startCore, server } from '../src/index.js'
+import { parsePoliciesMarkdown } from '../src/policies.js'
 import {
   closeDatabase,
   getProjectCounts,
@@ -14,6 +16,9 @@ import {
   patchConnection,
   upsertAgent,
   deleteAgent,
+  getPolicies,
+  setSetting,
+  listEvents,
 } from '../src/db.js'
 
 const BASE = 'http://localhost:7899'
@@ -587,5 +592,166 @@ test('G10: POST /api/agents/:id/session/restart e POST /api/sessions recusam 404
   } finally {
     await api('PATCH', '/api/settings', { approvedRuntimes: originalApproved })
     await api('DELETE', '/api/agents/ag-ollama-restart')
+  }
+})
+
+test('G11: /api/catalog e /api/runtimes expõem policyEffects coerentes', async () => {
+  const catalogRes = await api('GET', '/api/catalog')
+  assert.equal(catalogRes.status, 200)
+  const runtimesRes = await api('GET', '/api/runtimes')
+  assert.equal(runtimesRes.status, 200)
+
+  for (const list of [catalogRes.data.catalog, runtimesRes.data.runtimes]) {
+    const codex = list.find((r) => r.id === 'codex')
+    const claude = list.find((r) => r.id === 'claude')
+    assert.ok(codex?.policyEffects)
+    assert.ok(claude?.policyEffects)
+
+    assert.equal(codex.policyEffects.allowNetwork.kind, 'technical')
+    assert.equal(codex.policyEffects.allowDestructiveCommands.kind, 'directive')
+    assert.equal(codex.policyEffects.allowCredentials.kind, 'directive')
+
+    assert.equal(claude.policyEffects.allowNetwork.kind, 'directive')
+    assert.match(claude.policyEffects.allowNetwork.note, /WebFetch/)
+    assert.match(claude.policyEffects.allowNetwork.note, /WebSearch/)
+    assert.match(claude.policyEffects.allowNetwork.note, /shell/i)
+    assert.equal(claude.policyEffects.allowDestructiveCommands.kind, 'directive')
+    assert.equal(claude.policyEffects.allowCredentials.kind, 'directive')
+
+    for (const id of ['kimi', 'glm', 'antigravity', 'opencode', 'ollama', 'lmstudio', 'powershell']) {
+      const rt = list.find((r) => r.id === id)
+      assert.ok(rt?.policyEffects)
+      assert.equal(rt.policyEffects.allowDestructiveCommands.kind, 'directive')
+      assert.equal(rt.policyEffects.allowNetwork.kind, 'directive')
+      assert.equal(rt.policyEffects.allowCredentials.kind, 'directive')
+    }
+  }
+})
+
+test('G11: PATCH /api/settings parcial preserva outras políticas, recusa 400 inválidos e regrava .vertice/memory', async () => {
+  await api('POST', '/api/projects/proj-a/activate')
+  const initialSettings = (await api('GET', '/api/settings')).data.settings
+  const originalPolicies = { ...initialSettings.policies }
+
+  try {
+    // Define estado conhecido inicial
+    const resetRes = await api('PATCH', '/api/settings', {
+      policies: { allowDestructiveCommands: false, allowNetwork: true, allowCredentials: false },
+    })
+    assert.equal(resetRes.status, 200)
+    assert.deepEqual(resetRes.data.settings.policies, {
+      allowDestructiveCommands: false,
+      allowNetwork: true,
+      allowCredentials: false,
+    })
+
+    // Patch parcial: desliga apenas allowNetwork
+    const partialRes = await api('PATCH', '/api/settings', { policies: { allowNetwork: false } })
+    assert.equal(partialRes.status, 200)
+    assert.deepEqual(partialRes.data.settings.policies, {
+      allowDestructiveCommands: false,
+      allowNetwork: false,
+      allowCredentials: false,
+    })
+
+    const memPath = join(testDir, 'proj-a', '.vertice', 'memory', 'ag-a1.md')
+    assert.equal(existsSync(memPath), true)
+    const mem1 = readFileSync(memPath, 'utf8')
+    assert.ok(mem1.includes('## Políticas do setor'))
+    assert.deepEqual(parsePoliciesMarkdown(mem1), {
+      allowDestructiveCommands: false,
+      allowNetwork: false,
+      allowCredentials: false,
+    })
+
+    // Patch parcial seguinte: liga allowDestructiveCommands sem mexer em allowNetwork
+    const partial2 = await api('PATCH', '/api/settings', { policies: { allowDestructiveCommands: true } })
+    assert.equal(partial2.status, 200)
+    assert.deepEqual(partial2.data.settings.policies, {
+      allowDestructiveCommands: true,
+      allowNetwork: false,
+      allowCredentials: false,
+    })
+
+    const mem2 = readFileSync(memPath, 'utf8')
+    assert.deepEqual(parsePoliciesMarkdown(mem2), {
+      allowDestructiveCommands: true,
+      allowNetwork: false,
+      allowCredentials: false,
+    })
+
+    // Rejeições 400 não gravam nada no banco (nem outros campos enviados no mesmo PATCH)
+    const beforeInvalid = (await api('GET', '/api/settings')).data.settings
+    for (const invalidBody of [
+      { policies: { unknownPolicy: true } },
+      { policies: { allowNetwork: 'nao' } },
+      { policies: { allowCredentials: 1 } },
+      { policies: null },
+      { policies: [] },
+      { approvedRuntimes: ['claude'], policies: { extra: false } },
+    ]) {
+      const bad = await api('PATCH', '/api/settings', invalidBody)
+      assert.equal(bad.status, 400)
+      assert.equal(typeof bad.data.error, 'string')
+      const afterInvalid = (await api('GET', '/api/settings')).data.settings
+      assert.deepEqual(afterInvalid.policies, beforeInvalid.policies)
+      assert.deepEqual(afterInvalid.approvedRuntimes, beforeInvalid.approvedRuntimes)
+    }
+
+    // Property 23: Alterar uma política não altera as outras (via HTTP)
+    // Feature: bloco-g-fechamento, Property 23: Alterar uma política não altera as outras
+    await fc.assert(
+      fc.asyncProperty(
+        fc.record(
+          {
+            allowDestructiveCommands: fc.boolean(),
+            allowNetwork: fc.boolean(),
+            allowCredentials: fc.boolean(),
+          },
+          { requiredKeys: [] },
+        ),
+        async (patch) => {
+          const prev = (await api('GET', '/api/settings')).data.settings.policies
+          const res = await api('PATCH', '/api/settings', { policies: patch })
+          assert.equal(res.status, 200)
+          assert.deepEqual(res.data.settings.policies, { ...prev, ...patch })
+        },
+      ),
+      { numRuns: 100 },
+    )
+  } finally {
+    await api('PATCH', '/api/settings', { policies: originalPolicies })
+  }
+})
+
+test('G11: settings.policies ausente ou corrompido no SQLite faz getPolicies() retornar false e registrar evento', () => {
+  const originalPolicies = getPolicies({ recordOnInvalid: false })
+  const dbFile = join(testDir, 'data', 'vertice.db')
+  const raw = new DatabaseSync(dbFile)
+  try {
+    raw.prepare("DELETE FROM settings WHERE key = 'policies'").run()
+    const beforeMissingId = listEvents()[0]?.id ?? 0
+    assert.deepEqual(getPolicies(), {
+      allowDestructiveCommands: false,
+      allowNetwork: false,
+      allowCredentials: false,
+    })
+    const eventsAfterMissing = listEvents()
+    assert.ok(eventsAfterMissing[0].id > beforeMissingId)
+    assert.match(eventsAfterMissing[0].message, /Política ausente ou inválida tratada como desligada/)
+
+    raw.prepare("INSERT INTO settings (key, value) VALUES ('policies', 'corrompido') ON CONFLICT(key) DO UPDATE SET value = 'corrompido'").run()
+    const beforeCorruptId = listEvents()[0]?.id ?? 0
+    assert.deepEqual(getPolicies(), {
+      allowDestructiveCommands: false,
+      allowNetwork: false,
+      allowCredentials: false,
+    })
+    const eventsAfterCorrupt = listEvents()
+    assert.ok(eventsAfterCorrupt[0].id > beforeCorruptId)
+    assert.match(eventsAfterCorrupt[0].message, /Política ausente ou inválida tratada como desligada/)
+  } finally {
+    raw.close()
+    setSetting('policies', originalPolicies)
   }
 })

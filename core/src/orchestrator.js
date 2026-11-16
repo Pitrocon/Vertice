@@ -6,9 +6,10 @@ import { createTaskMonitor, COMPLETION_INSTRUCTION, stripAnsi } from './task-mon
 import { startSession, writeToSession, listActiveSessions, buildChildEnv } from './sessions.js'
 import { resolveExecutionMode, buildHeadlessLaunch, mapHeadlessOutcome, runHeadless, killHeadlessProcess } from './headless.js'
 import { assertAllowedCwd, WorkspaceError } from './workspace.js'
+import { buildPolicyArgs, buildPoliciesNote } from './policies.js'
 import {
   getWorkspaceSnapshot, patchWorkItem, patchAgent, recordEvent,
-  getSetting, listAllowedWorkspaces,
+  getSetting, getPolicies, listAllowedWorkspaces,
   getAgent, getAgentTranscript, setAgentTranscript, appendAgentMemory,
   setConnectionActive, getActiveProjectId, getAgentProjectId, interruptProjectWork,
 } from './db.js'
@@ -56,7 +57,7 @@ const transcripts = createTranscriptRecorder({
 })
 
 /** Reescreve <projeto ativo>/.vertice/memory/<agente>.md a partir do banco. Nunca lança erro. */
-export function syncMemoryFile(agentId) {
+export function syncMemoryFile(agentId, explicitPolicies) {
   try {
     const activeId = getActiveProjectId()
     if (!activeId || getAgentProjectId(agentId) !== activeId) return null
@@ -67,12 +68,14 @@ export function syncMemoryFile(agentId) {
     if (!projectPath) return null
     // O arquivo só é gravado dentro de um workspace permitido (mesma regra de confinamento das sessões).
     const safeDir = assertAllowedCwd(projectPath, listAllowedWorkspaces())
+    const policies = explicitPolicies ?? getPolicies({ recordOnInvalid: false })
     return writeMemoryFile(safeDir, agentId, buildMemoryMarkdown({
       agent,
       memory: agent.memory,
       transcript: agent.lastTranscript,
       allAgents: snapshot.agents,
       connections: snapshot.connections,
+      policies,
     }))
   } catch (error) {
     console.error('[memoria] não foi possível gravar o arquivo de memória:', error.message)
@@ -84,8 +87,9 @@ export function syncMemoryFile(agentId) {
 export function syncAllMemoryFiles() {
   try {
     const snapshot = getWorkspaceSnapshot()
+    const policies = getPolicies({ recordOnInvalid: false })
     for (const agent of snapshot.agents) {
-      syncMemoryFile(agent.id)
+      syncMemoryFile(agent.id, policies)
     }
   } catch { /* ignora caso nenhum workspace esteja ativo */ }
 }
@@ -613,8 +617,8 @@ export async function launchAgentSession({ agent, agentId, runtimeId, cwd, resum
     throw createStatusError(400, msg)
   }
 
-  // Ponto de extensão para o G11 somar `policyArgs` aos argumentos da sessão antes de iniciá-la.
-  const policyArgs = []
+  const policies = getPolicies()
+  const policyArgs = buildPolicyArgs(runtime, policies)
   const args = [...(runtime.sessionArgs ?? []), ...policyArgs]
 
   const session = startSession({
@@ -706,7 +710,29 @@ async function autoCompleteTask(sessionId, workItemId, { reason, result }) {
   }
 }
 
-function buildDispatchInstruction({ agent, item, snapshot, runtimeId, includeResumeNote, feedback, multiline }) {
+function dedupeHeadlessPolicyArgs(baseArgs, policyArgs) {
+  if (!Array.isArray(baseArgs) || !Array.isArray(policyArgs) || policyArgs.length === 0) {
+    return Array.isArray(policyArgs) ? [...policyArgs] : []
+  }
+  const hasFlagPair = (flag, value) => {
+    for (let i = 0; i < baseArgs.length - 1; i += 1) {
+      if (baseArgs[i] === flag && baseArgs[i + 1] === value) return true
+    }
+    return false
+  }
+  const out = []
+  for (let i = 0; i < policyArgs.length; i += 1) {
+    const arg = policyArgs[i]
+    if (arg === '--sandbox' && i + 1 < policyArgs.length && hasFlagPair(arg, policyArgs[i + 1])) {
+      i += 1
+      continue
+    }
+    out.push(arg)
+  }
+  return out
+}
+
+function buildDispatchInstruction({ agent, item, snapshot, runtimeId, includeResumeNote, feedback, multiline, policies }) {
   const connectedHint = runtimeId !== 'powershell'
     ? buildConnectedAgentsHint(agent, snapshot.agents, snapshot.connections)
     : ''
@@ -719,8 +745,9 @@ function buildDispatchInstruction({ agent, item, snapshot, runtimeId, includeRes
   const reviewText = feedback
     ? `Revisão do gestor (a entrega anterior foi devolvida): ${feedback} Corrija conforme essa revisão e entregue de novo.`
     : ''
+  const policiesNote = policies ? buildPoliciesNote(policies) : ''
   const completionText = !multiline && runtimeId !== 'powershell' ? COMPLETION_INSTRUCTION : ''
-  const parts = [resumeNote, agent.prompt, `Tarefa: ${item.title}`, specText, reviewText, completionText]
+  const parts = [resumeNote, agent.prompt, policiesNote, `Tarefa: ${item.title}`, specText, reviewText, completionText]
     .filter((part) => typeof part === 'string' && part.trim() !== '')
   if (multiline) return parts.join('\n\n').trim()
   return parts.join(' ').replace(/\s*[\r\n]+\s*/g, ' ').trim()
@@ -870,6 +897,7 @@ export async function dispatchWorkItem(workItemId, { feedback } = {}) {
     })
 
     mkdirSync(safeCwd, { recursive: true })
+    const policies = getPolicies()
     if (feedback) {
       appendAgentMemory(agent.id, formatMemoryEntry({ title: `Devolvida pelo gestor: ${item.title}`, result: `Feedback: ${feedback}` }))
     }
@@ -884,6 +912,7 @@ export async function dispatchWorkItem(workItemId, { feedback } = {}) {
       includeResumeNote: hadContext || Boolean(connectedHint),
       feedback,
       multiline: true,
+      policies,
     })
 
     cancelTaskMonitorsFor(item.id)
@@ -900,7 +929,8 @@ export async function dispatchWorkItem(workItemId, { feedback } = {}) {
     const updated = getWorkspaceSnapshot()
     broadcastFn({ type: 'task-updated', workItemId: item.id, snapshot: updated })
 
-    const launch = buildHeadlessLaunch(runtime)
+    const policyArgs = dedupeHeadlessPolicyArgs(runtime.headless.args, buildPolicyArgs(runtime, policies))
+    const launch = buildHeadlessLaunch(runtime, { policyArgs })
     headlessRuns.set(item.id, { child: null, agentId: agent.id })
     void executeHeadlessRun({
       workItemId: item.id,
@@ -917,6 +947,7 @@ export async function dispatchWorkItem(workItemId, { feedback } = {}) {
   }
 
   const { sessionId, created, hadContext } = await ensureAgentSession(agent, snapshot)
+  const policies = getPolicies({ recordOnInvalid: false })
 
   // Instrução em UMA linha: num terminal interativo cada quebra de linha viraria um Enter e enviaria
   // o prompt picado, em várias submissões.
@@ -932,6 +963,7 @@ export async function dispatchWorkItem(workItemId, { feedback } = {}) {
     includeResumeNote: created && (hadContext || Boolean(connectedHint)),
     feedback,
     multiline: false,
+    policies,
   })
 
   // Sessão nova: espera a CLI terminar de subir antes de digitar.

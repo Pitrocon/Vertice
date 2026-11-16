@@ -9,6 +9,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { stripAnsi } from './task-monitor.js'
+import { buildPoliciesMarkdown, normalizePolicies } from './policies.js'
 
 export const TRANSCRIPT_MAX_CHARS = 15000
 const SESSION_SEPARATOR = '— nova sessão —'
@@ -152,7 +153,8 @@ export function formatMemoryEntry({ title, result, error, date = new Date() }) {
   return `[${when}] ${error ? 'Tarefa falhou' : 'Tarefa concluída'}: ${title} → ${summary}`
 }
 
-export function buildMemoryMarkdown({ agent, memory, transcript, allAgents = [], connections = [] }) {
+export function buildMemoryMarkdown({ agent, memory, transcript, allAgents = [], connections = [], policies }) {
+  const effectivePolicies = policies ?? normalizePolicies(null).policies
   const tail = String(transcript ?? '').slice(-6000).trim()
   const outgoing = connections
     .filter((c) => c.source === agent.id)
@@ -193,6 +195,8 @@ export function buildMemoryMarkdown({ agent, memory, transcript, allAgents = [],
     '',
     '## Instrução de sistema',
     agent.prompt || '(não definida)',
+    '',
+    buildPoliciesMarkdown(effectivePolicies),
     '',
     '## Equipe e Conexões no Organograma',
     connectionLines.length ? connectionLines.join('\n') : '(nenhum outro agente conectado a este no momento)',

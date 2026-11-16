@@ -1,4 +1,6 @@
-import type { Agent, AgentConnection, ActivityEvent, Goal, WorkItem, Project } from '@/types/agent'
+import type { Agent, AgentConnection, ActivityEvent, Goal, WorkItem, Project, PolicyEffectInfo, PolicyEffectsMap, PolicyKey } from '@/types/agent'
+
+export type { PolicyEffectInfo, PolicyEffectsMap, PolicyKey }
 
 const BASE = 'http://localhost:7845'
 
@@ -28,6 +30,8 @@ export interface DetectedRuntime {
   auth?: 'found' | 'not-found' | 'unknown' | null
   /** G9: o runtime suporta execução automática em segundo plano (sem terminal). */
   headless?: boolean
+  /** G11: efeito real de cada política nesta CLI (bloqueio técnico ou diretiva). */
+  policyEffects?: PolicyEffectsMap
 }
 
 /** G3: saída ao vivo de uma instalação de CLI (eventos "install-output" do core). */

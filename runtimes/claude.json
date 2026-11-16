@@ -19,5 +19,12 @@
       "https://code.claude.com/docs/en/permission-modes"
     ]
   },
+  "policyFlags": {
+    "allowNetwork": {
+      "whenOff": ["--disallowedTools", "WebFetch", "WebSearch"],
+      "effect": "directive",
+      "source": "https://code.claude.com/docs/en/cli-reference"
+    }
+  },
   "order": 1
 }

@@ -112,6 +112,17 @@ export interface CliRuntime {
   approved: boolean
 }
 
+export type PolicyKey = 'allowDestructiveCommands' | 'allowNetwork' | 'allowCredentials'
+
+/** G11: descreve se uma política tem bloqueio técnico na CLI ou vale apenas como diretiva. */
+export type PolicyEffectInfo = {
+  kind: 'technical' | 'directive'
+  note: string
+  source?: string
+}
+
+export type PolicyEffectsMap = Partial<Record<'allowDestructiveCommands' | 'allowNetwork' | 'allowCredentials', PolicyEffectInfo>>
+
 export const statusLabels: Record<AgentStatus, string> = {
   working: 'Executando',
   idle: 'Disponível',

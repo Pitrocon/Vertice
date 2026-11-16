@@ -21,6 +21,7 @@ editar código: reinicie o `vertice-core` e o runtime passa a ser detectado.
 | `authenticates` | boolean | não | `true` se a CLI exige login antes de rodar (relevante para execução não interativa). |
 | `authCheck` | objeto\|null | não | Onde a CLI guarda o login: `{ "files": ["%USERPROFILE%\\..."], "env": ["VAR"] }`. A aba CLI's mostra "Credencial encontrada" se algum arquivo existir ou alguma variável estiver definida (não valida o token). Sem `authCheck`, o estado do login aparece como "não dá para verificar daqui". |
 | `headless` | objeto\|null | não | Configuração opcional de execução não interativa estruturada (ver seção abaixo). Quando ausente ou inválido, o runtime permanece exclusivamente interativo. |
+| `policyFlags` | objeto\|null | não | Flags oficiais aplicadas quando uma política do setor está desligada (`false`). Ver seção abaixo. |
 | `order` | number | não | Ordem de exibição no catálogo (menor primeiro). Padrão: 999. |
 
 ## Modo headless (opcional)
@@ -52,12 +53,31 @@ No Windows, executáveis `.cmd` / `.bat` (como shims do `npm`) precisam ser inic
 | `opencode` | Não (interativo) | `opencode run` documenta a mensagem como argumento de linha de comando (não por stdin) e não detalha formato JSON e códigos de saída nas páginas consultadas. |
 | `ollama`, `lmstudio`, `powershell` | Não (interativos) | Não são CLIs de agente com modo `print` estruturado. |
 
+## Políticas do setor (`policyFlags` e `policyEffects`)
+
+O campo opcional `policyFlags` declara quais flags oficiais da CLI são acrescentadas quando uma das políticas do setor (`allowDestructiveCommands`, `allowNetwork`, `allowCredentials`) está desligada (`false`).
+
+| Subcampo (por chave de política) | Tipo | Obrigatório | Regra de validação |
+|---|---|---|---|
+| `whenOff` | string[] | sim | Lista não vazia de flags constantes (strings não vazias) passadas quando a política é `false`. |
+| `effect` | `"technical" \| "directive"` | sim | Classificação honesta do efeito real da flag. |
+| `source` | string | sim | URL da documentação oficial iniciando com `https://`. |
+
+### Efeito efetivo (`policyEffects`)
+
+A partir de `policyFlags`, `core/src/runtimes.js` calcula `policyEffects` (via `describePolicyEffects(runtime)`) e o expõe em `RUNTIME_CATALOG`, `GET /api/catalog` e `GET /api/runtimes`:
+
+- `kind: "technical"` (**Bloqueio técnico**): somente quando `effect === "technical"` está declarado no manifesto (ex.: `codex` com `allowNetwork: false` aplica `--sandbox workspace-write`, que bloqueia rede no sandbox do SO e limita escrita ao workspace).
+- `kind: "directive"` (**Diretiva**): qualquer política sem flag oficial ou com bloqueio apenas parcial. No `claude`, `allowNetwork: false` aplica `--disallowedTools WebFetch WebSearch` (conferido na documentação oficial e em `claude --help`), bloqueando as ferramentas web nativas, mas comandos de shell ainda podem acessar a rede — por isso é classificada como `directive`.
+- `allowDestructiveCommands` e `allowCredentials` (em todos os runtimes) e todas as políticas dos demais runtimes (`kimi`, `glm`, `antigravity`, `opencode`, `ollama`, `lmstudio`, `powershell`) não possuem flag oficial confirmada e valem como diretiva registrada na memória viva (`.vertice/memory/<agente>.md`) e na instrução da tarefa.
+
 ## Observações
 
 - Manifestos malformados (JSON inválido ou faltando campos obrigatórios) são
   ignorados com aviso no log; a detecção continua com os válidos.
-- Blocos `headless` inválidos são ignorados com aviso (`console.warn`) no boot,
-  sem derrubar o catálogo: o runtime continua disponível no modo interativo.
+- Blocos `headless` ou entradas de `policyFlags` inválidos são ignorados com
+  aviso (`console.warn`) no boot, sem derrubar o catálogo: o runtime continua
+  disponível no modo interativo / com políticas em modo diretiva.
 - Se a pasta estiver ausente ou vazia, o `runtimes.js` usa um catálogo embutido
   de fallback para nunca quebrar a detecção.
 - A instalação só executa o comando oficial do campo `install`, nunca entrada

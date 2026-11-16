@@ -1,8 +1,34 @@
-import { useEffect, useRef, useState } from 'react'
-import { Download, FolderLock, KeyRound, Plug, PlugZap, RefreshCw, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Download, FolderLock, KeyRound, Plug, PlugZap, RefreshCw, RotateCcw, X } from 'lucide-react'
 import { useWorkspace } from '@/store/workspace'
-import type { DetectedRuntime, InstallLog } from '@/lib/api'
-import type { CliStatus } from '@/types/agent'
+import type { DetectedRuntime, InstallLog, VerticePolicies } from '@/lib/api'
+import type { CliStatus, PolicyKey } from '@/types/agent'
+
+const POLICY_DEFINITIONS: {
+  key: PolicyKey
+  title: string
+  description: string
+  fallbackNote: string
+}[] = [
+  {
+    key: 'allowDestructiveCommands',
+    title: 'Comandos destrutivos permitidos',
+    description: 'Quando desligado, a instrução vai para a IA como diretiva. Nenhuma CLI tem bloqueio técnico completo para isso.',
+    fallbackNote: 'Aplicada como diretiva na memória e na instrução do agente.',
+  },
+  {
+    key: 'allowNetwork',
+    title: 'Acesso à rede pelos agentes',
+    description: 'Quando desligado, o Codex roda com sandbox sem rede (bloqueio técnico). Nas demais CLIs é diretiva; no Claude Code as ferramentas web são bloqueadas e um comando de shell ainda pode acessar a rede.',
+    fallbackNote: 'Aplicada como diretiva na memória e na instrução do agente.',
+  },
+  {
+    key: 'allowCredentials',
+    title: 'Uso de credenciais pelos agentes',
+    description: 'Diretiva: registrada na memória e na instrução de cada agente.',
+    fallbackNote: 'Aplicada como diretiva na memória e na instrução do agente.',
+  },
+]
 
 const cliStatusLabels: Record<CliStatus, string> = {
   installed: 'Instalado',
@@ -19,9 +45,18 @@ const authLabels: Record<'found' | 'not-found' | 'unknown', { text: string; titl
 }
 
 export function OrgPage() {
-  const { serviceOnline, realRuntimes, cliRuntimes, refreshService, settings, updatePolicies, toggleCliApproved, installCli, installLogs, clearInstallLog, openLoginTerminal } = useWorkspace()
+  const {
+    serviceOnline, realRuntimes, cliRuntimes, liveSessions, refreshService,
+    settings, updatePolicies, toggleCliApproved, installCli, installLogs, clearInstallLog, openLoginTerminal,
+  } = useWorkspace()
   const [checking, setChecking] = useState(false)
   const [installingId, setInstallingId] = useState<string | null>(null)
+
+  const installedRuntimes = useMemo(
+    () => (serviceOnline && realRuntimes ? realRuntimes.filter((runtime) => runtime.status === 'installed') : []),
+    [serviceOnline, realRuntimes],
+  )
+  const activeSessionCount = Object.keys(liveSessions).length
 
   const verify = async () => {
     setChecking(true)
@@ -163,23 +198,76 @@ export function OrgPage() {
       <section className="org-section">
         <div className="org-section__heading">
           <h2>Políticas do setor</h2>
-          <p>Definidas pelo responsável de TI e aplicadas a todas as máquinas da empresa.</p>
+          <p>Defina o que os agentes podem fazer e confira, em cada CLI instalada, o que tem bloqueio técnico e o que vale como diretiva.</p>
         </div>
-        <div className="settings-list settings-list--page">
-          <label>
-            <span><strong>Comandos destrutivos permitidos</strong><small>Quando desligado, operações destrutivas ficam marcadas como não autorizadas pela política (registro declarativo no backend).</small></span>
-            <input type="checkbox" checked={Boolean(settings?.policies.allowDestructiveCommands)} disabled={!serviceOnline} onChange={(e) => updatePolicies({ allowDestructiveCommands: e.target.checked })} />
-          </label>
-          <label>
-            <span><strong>Acesso à rede pelos agentes</strong><small>Permitir que os agentes façam chamadas de rede a partir do workspace.</small></span>
-            <input type="checkbox" checked={Boolean(settings?.policies.allowNetwork)} disabled={!serviceOnline} onChange={(e) => updatePolicies({ allowNetwork: e.target.checked })} />
-          </label>
-          <label>
-            <span><strong>Uso de credenciais pelos agentes</strong><small>Permitir que os agentes utilizem credenciais armazenadas na máquina.</small></span>
-            <input type="checkbox" checked={Boolean(settings?.policies.allowCredentials)} disabled={!serviceOnline} onChange={(e) => updatePolicies({ allowCredentials: e.target.checked })} />
-          </label>
-          {!serviceOnline && <small className="org-hint">Conecte o serviço local para editar e salvar as políticas.</small>}
+        {activeSessionCount > 0 && (
+          <div className="policy-session-warning" role="status">
+            <RotateCcw size={15} />
+            <span>
+              {`A alteração só vale para sessões iniciadas depois. Reinicie as sessões abertas (${activeSessionCount}) para aplicar.`}
+            </span>
+          </div>
+        )}
+        <div className="settings-list settings-list--page policy-list">
+          {POLICY_DEFINITIONS.map((policy) => {
+            const inputId = `policy-${policy.key}`
+            return (
+              <div key={policy.key} className="policy-item">
+                <label className="policy-item__control" htmlFor={inputId}>
+                  <span>
+                    <strong>{policy.title}</strong>
+                    <small>{policy.description}</small>
+                  </span>
+                  <input
+                    id={inputId}
+                    type="checkbox"
+                    checked={Boolean(settings?.policies?.[policy.key])}
+                    disabled={!serviceOnline}
+                    onChange={(e) => updatePolicies({ [policy.key]: e.target.checked } as Partial<VerticePolicies>)}
+                  />
+                </label>
+                <div className="policy-effects">
+                  <span className="policy-effects__heading">Efeito por CLI instalada</span>
+                  {!serviceOnline ? (
+                    <p className="policy-effects__empty">
+                      Serviço local offline — conecte para ver o efeito real nas CLIs instaladas.
+                    </p>
+                  ) : !realRuntimes ? (
+                    <p className="policy-effects__empty">
+                      Verificando as CLIs instaladas nesta máquina…
+                    </p>
+                  ) : installedRuntimes.length === 0 ? (
+                    <p className="policy-effects__empty">
+                      Nenhuma CLI instalada detectada nesta máquina.
+                    </p>
+                  ) : (
+                    <ul className="policy-effects__list">
+                      {installedRuntimes.map((runtime) => {
+                        const effect = runtime.policyEffects?.[policy.key]
+                        const kind = effect?.kind === 'technical' ? 'technical' : 'directive'
+                        const badgeLabel = kind === 'technical' ? 'Bloqueio técnico' : 'Diretiva'
+                        const note = effect?.note?.trim() || policy.fallbackNote
+                        return (
+                          <li key={runtime.id} className="policy-effect-row">
+                            <strong className="policy-effect-row__runtime">{runtime.name}</strong>
+                            <span
+                              className={`policy-badge policy-badge--${kind}`}
+                              title={effect?.source}
+                            >
+                              {badgeLabel}
+                            </span>
+                            <span className="policy-effect-row__note">{note}</span>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )
+          })}
         </div>
+        {!serviceOnline && <p className="org-hint">Conecte o serviço local para editar e salvar as políticas.</p>}
       </section>
     </div>
   )

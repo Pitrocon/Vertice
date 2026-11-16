@@ -18,5 +18,12 @@
       "https://learn.chatgpt.com/docs/non-interactive-mode"
     ]
   },
+  "policyFlags": {
+    "allowNetwork": {
+      "whenOff": ["--sandbox", "workspace-write"],
+      "effect": "technical",
+      "source": "https://developers.openai.com/codex/sandbox"
+    }
+  },
   "order": 2
 }

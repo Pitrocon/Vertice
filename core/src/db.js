@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { normalizePolicies } from './policies.js'
 
 // Diretório de dados do SQLite. No modo empacotado (Electron), o processo main
 // aponta VERTICE_DATA_DIR para app.getPath('userData') para que o banco fique
@@ -477,6 +478,15 @@ export function setSetting(key, value) {
     INSERT INTO settings (key, value) VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(key, serialized)
+}
+
+export function getPolicies({ recordOnInvalid = true } = {}) {
+  const raw = getSetting('policies')
+  const { policies, invalid } = normalizePolicies(raw)
+  if (invalid.length > 0 && recordOnInvalid) {
+    recordEvent(null, `Política ausente ou inválida tratada como desligada: ${invalid.join(', ')}`, 'system')
+  }
+  return policies
 }
 
 export function listAllowedWorkspaces() {
