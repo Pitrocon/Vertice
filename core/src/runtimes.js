@@ -101,6 +101,7 @@ export const EXTRA_BIN_DIRS = [
 // Garante que as pastas de CLIs instaladas para o usuário façam parte tanto do PATH atual do Vértice
 // quanto do PATH persistente do Usuário no Windows (para funcionarem também no PowerShell/CMD fora do app).
 export function syncUserCliPath() {
+  if (process.env.VERTICE_SKIP_PATH_SYNC === '1') return
   const existingDirs = EXTRA_BIN_DIRS.filter((dir) => existsSync(dir))
   if (!existingDirs.length) return
   const currentPath = process.env.Path || process.env.PATH || ''

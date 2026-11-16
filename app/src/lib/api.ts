@@ -150,7 +150,7 @@ export const api = {
   },
 
   // Retorna a mensagem de erro do core (ex.: caminho de sistema recusado com 403) para a UI exibir.
-  async createProject(input: { id?: string; name: string; path: string; description: string }): Promise<MutationResult> {
+  async createProject(input: { id?: string; name: string; path: string; description: string; copyTeamFromProjectId?: string }): Promise<MutationResult> {
     return mutate('POST', '/api/projects', input)
   },
 
@@ -159,11 +159,11 @@ export const api = {
   },
 
   async deleteProject(id: string): Promise<MutationResult> {
-    return mutate('DELETE', `/api/projects/${encodeURIComponent(id)}`)
+    return mutate('DELETE', `/api/projects/${encodeURIComponent(id)}?confirm=true`)
   },
 
-  async activateProject(id: string): Promise<WorkspaceSnapshot | null> {
-    return request<WorkspaceSnapshot>('POST', `/api/projects/${id}/activate`)
+  async activateProject(id: string): Promise<MutationResult> {
+    return mutate('POST', `/api/projects/${encodeURIComponent(id)}/activate`)
   },
 
   async createAgent(input: Agent & { parentId?: string }): Promise<WorkspaceSnapshot | null> {

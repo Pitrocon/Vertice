@@ -9,7 +9,7 @@ import {
   getWorkspaceSnapshot, patchWorkItem, patchAgent, recordEvent,
   getSetting, listAllowedWorkspaces,
   getAgent, getAgentTranscript, setAgentTranscript, appendAgentMemory,
-  setConnectionActive,
+  setConnectionActive, getActiveProjectId, getAgentProjectId, interruptProjectWork,
 } from './db.js'
 import {
   createTranscriptRecorder, hasPriorContext, buildResumeNote, buildConnectedAgentsHint, buildMemoryMarkdown, writeMemoryFile, formatMemoryEntry,
@@ -49,6 +49,8 @@ const transcripts = createTranscriptRecorder({
 /** Reescreve <projeto ativo>/.vertice/memory/<agente>.md a partir do banco. Nunca lança erro. */
 export function syncMemoryFile(agentId) {
   try {
+    const activeId = getActiveProjectId()
+    if (!activeId || getAgentProjectId(agentId) !== activeId) return null
     const agent = getAgent(agentId)
     if (!agent) return null
     const snapshot = getWorkspaceSnapshot()
@@ -152,7 +154,7 @@ function runtimeIdForAgent(agent) {
 }
 
 function activeProjectPath(snapshot) {
-  const active = snapshot.projects.find((p) => p.active) ?? snapshot.projects[0]
+  const active = snapshot.projects.find((p) => p.active)
   return active?.path ?? ''
 }
 
@@ -449,12 +451,11 @@ function scanHandoffFiles() {
   } catch { /* ignora erros de leitura transitórios */ }
 }
 
-function ensureHandoffWatcher() {
-  if (handoffInterval) return
+export function baselineHandoffFiles(explicitProjectPath) {
+  seenHandoffFiles.clear()
   // Inicializa o mapa com arquivos já existentes antes da sessão para não reenviar handoffs antigos.
   try {
-    const snapshot = getWorkspaceSnapshot()
-    const projectPath = activeProjectPath(snapshot)
+    const projectPath = explicitProjectPath ?? activeProjectPath(getWorkspaceSnapshot())
     if (projectPath) {
       const safeDir = assertAllowedCwd(projectPath, listAllowedWorkspaces())
       const verticeDir = join(safeDir, '.vertice')
@@ -466,9 +467,45 @@ function ensureHandoffWatcher() {
       }
     }
   } catch { /* diretório .vertice ainda não existe */ }
+}
+
+function ensureHandoffWatcher() {
+  if (handoffInterval) return
+  baselineHandoffFiles()
 
   handoffInterval = setInterval(scanHandoffFiles, 2500)
   if (typeof handoffInterval.unref === 'function') handoffInterval.unref()
+}
+
+export const PROJECT_SWITCH_ERROR = 'Interrompida: o projeto foi trocado ou excluído e a sessão foi encerrada.'
+
+export function resetForProjectSwitch(oldProjectId, { nextProjectPath } = {}) {
+  transcripts.flushAll()
+
+  for (const entry of taskMonitors.values()) {
+    entry.monitor.cancel()
+  }
+  taskMonitors.clear()
+
+  for (const entry of messageTurns.values()) {
+    entry.monitor.cancel()
+    clearTimeout(entry.cap)
+  }
+  messageTurns.clear()
+
+  if (oldProjectId) {
+    interruptProjectWork(oldProjectId, PROJECT_SWITCH_ERROR)
+  }
+
+  agentSessions.clear()
+  agentOutputBuffers.clear()
+  injectedPrompts.clear()
+  recentDeliveries.clear()
+  lastAgentForwardAt.clear()
+  sessionActivity.clear()
+  seenHandoffFiles.clear()
+
+  baselineHandoffFiles(nextProjectPath)
 }
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))

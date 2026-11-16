@@ -87,6 +87,13 @@ export interface Project {
   path: string
   description: string
   active?: boolean
+  counts?: {
+    agents: number
+    connections: number
+    goals: number
+    tasks: number
+    openTasks: number
+  }
 }
 
 export type CliStatus = 'installed' | 'missing' | 'checking' | 'installing'

@@ -441,11 +441,12 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
   - **Aceite:** criar Tarefa B dependendo da Tarefa A; ao aprovar A, B é despachada automaticamente para seu agente.
   - **Concluído em 16/11/2026:** `dependsOn`/`parentTaskId` validados (inclui ciclos), despacho bloqueado até as dependências concluírem, liberação automática ao aprovar ou mover para concluído, campo "Depende da tarefa", indicador de bloqueio, busca e filtros. Testado via HTTP; despacho real com CLI e UI não testados.
 
-- [ ] **G7** (BACKEND → FRONT) — **Isolamento real Multi-projeto** *(ver `tasks.md` 7.7)*:
+- [x] **G7** (BACKEND → FRONT) — **Isolamento real Multi-projeto** *(ver `tasks.md` 7.7)*:
   - `BACKEND`: adicionar `project_id TEXT` às tabelas `agents`, `connections`, `goals` e `work_items` em `core/src/db.js` (migração vinculando registros existentes ao projeto ativo/primeiro projeto); filtrar `getWorkspaceSnapshot()` pelo projeto ativo; ao chamar `POST /api/projects/:id/activate` em `core/src/index.js`, encerrar sessões do projeto anterior e ressincronizar `.vertice/memory/` no novo workspace.
   - `FRONT`: exibir em `Projects.tsx` contagens reais de agentes e tarefas de cada projeto (mesmo os inativos) e opção ao criar projeto de copiar equipe de outro projeto existente.
   - **Aceite:** alternar entre Projeto A e Projeto B troca agentes, organograma, metas e tarefas no quadro sem misturar contextos.
   - **Handoff:** fazer após `G1` e `G6` para evitar conflito de migração em `db.js`.
+  - **Concluído em 16/11/2026:** migração v7 idempotente, `getWorkspaceSnapshot()` filtrado por `project_id`, criação/vínculo com 409 sem projeto ativo e 400 cross-project, ativação `A → B` com `resetForProjectSwitch` (cancelando monitores, marcando `doing` como `failed`), clonagem de equipe sem metas/tarefas, exclusão em cascata com `?confirm=true`, contagens reais e modais em `Projects.tsx`. Validado por `http.test.js` (6/6), `workspace.test.js` (13/13), `tsc -b` e `eslint`; UI no navegador/PTY real não verificados.
 
 - [x] **G8** (PKG → FRONT) — **Seletor visual nativo de pastas no Electron** *(ver `tasks.md` 7.8)*:
   - `PKG`: registrar `ipcMain.handle('vertice:pick-folder', ...)` usando `dialog.showOpenDialog({ properties: ['openDirectory'] })` em `installers/electron/main.js` e expor `pickFolder()` via `contextBridge` em `installers/electron/preload.cjs`.

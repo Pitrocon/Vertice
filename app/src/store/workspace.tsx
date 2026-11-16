@@ -95,8 +95,8 @@ interface WorkspaceValue {
   moveWorkItem: (id: string, status: WorkStatus) => void
   addWorkItem: (input: { title: string; description?: string; assigneeId?: string; goalId?: string; priority: WorkItem['priority']; dependsOn?: string[] }) => void
   addGoal: (input: { title: string; description: string }) => void
-  addProject: (input: { name: string; path: string; description: string }) => void
-  setActiveProject: (id: string) => void
+  addProject: (input: { name: string; path: string; description: string; copyTeamFromProjectId?: string }) => Promise<boolean>
+  setActiveProject: (id: string) => Promise<boolean>
   checkCli: (id: string) => void
   installCli: (id: string) => void
   toggleCliApproved: (id: string) => void
@@ -164,30 +164,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [allowedWorkspaces, setAllowedWorkspaces] = useState<AllowedWorkspace[]>([])
   const wsRef = useRef<WebSocket | null>(null)
 
-  const applySnapshot = useCallback((snapshot: WorkspaceSnapshot | null) => {
-    if (!snapshot) return
-    // A última conversa (lastTranscript) só vem no carregamento inicial: vira linhas do terminal e não
-    // fica no estado dos agentes (nem no localStorage), para não pesar a cada atualização.
-    const agentsState = snapshot.agents.map((agent) => {
-      const copy = { ...agent }
-      delete copy.lastTranscript
-      return copy
-    })
-    setProjects(snapshot.projects)
-    setAgents(agentsState)
-    setConnections(snapshot.connections)
-    setGoals(snapshot.goals)
-    setWorkItems(snapshot.workItems)
-    // Lista vazia também é um estado válido (workspace limpo): sempre sobrescreve os eventos.
-    if (snapshot.events) setEvents(snapshot.events)
-    // Mantém a seleção se o agente ainda existe; senão seleciona o primeiro (ou ninguém).
-    setSelectedId((current) => (current && snapshot.agents.some((agent) => agent.id === current) ? current : (snapshot.agents[0]?.id ?? null)))
-    // Memória viva: ao reabrir o programa, cada agente mostra a conversa de antes de fechar.
-    setTerminalLines((current) => reconcileTerminalLines(current, snapshot.agents))
-    if (snapshot.settings) setSettings(snapshot.settings)
-    if (snapshot.allowedWorkspaces) setAllowedWorkspaces(snapshot.allowedWorkspaces)
-  }, [setProjects, setAgents, setConnections, setGoals, setWorkItems])
-
   // Saída BRUTA (com ANSI) por agente, para o emulador de terminal (xterm.js).
   // Guardada em ref (não em state) para não re-renderizar a cada chunk do PTY.
   const rawOutputRef = useRef<Record<string, { chunks: string[]; size: number }>>({})
@@ -215,6 +191,43 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     rawListenersRef.current.add(listener)
     return () => { rawListenersRef.current.delete(listener) }
   }, [])
+
+  const applySnapshot = useCallback((snapshot: WorkspaceSnapshot | null) => {
+    if (!snapshot) return
+    const validAgentIds = new Set(snapshot.agents.map((agent) => agent.id))
+    for (const key of Object.keys(rawOutputRef.current)) {
+      if (!validAgentIds.has(key)) delete rawOutputRef.current[key]
+    }
+    setLiveSessions((current) => {
+      const hasStale = Object.keys(current).some((key) => !validAgentIds.has(key))
+      if (!hasStale) return current
+      const next: Record<string, LiveSessionInfo> = {}
+      for (const [key, session] of Object.entries(current)) {
+        if (validAgentIds.has(key)) next[key] = session
+      }
+      return next
+    })
+    // A última conversa (lastTranscript) só vem no carregamento inicial: vira linhas do terminal e não
+    // fica no estado dos agentes (nem no localStorage), para não pesar a cada atualização.
+    const agentsState = snapshot.agents.map((agent) => {
+      const copy = { ...agent }
+      delete copy.lastTranscript
+      return copy
+    })
+    setProjects(snapshot.projects)
+    setAgents(agentsState)
+    setConnections(snapshot.connections)
+    setGoals(snapshot.goals)
+    setWorkItems(snapshot.workItems)
+    // Lista vazia também é um estado válido (workspace limpo): sempre sobrescreve os eventos.
+    if (snapshot.events) setEvents(snapshot.events)
+    // Mantém a seleção se o agente ainda existe; senão seleciona o primeiro (ou ninguém).
+    setSelectedId((current) => (current && validAgentIds.has(current) ? current : (snapshot.agents[0]?.id ?? null)))
+    // Memória viva: ao reabrir o programa, cada agente mostra a conversa de antes de fechar.
+    setTerminalLines((current) => reconcileTerminalLines(current, snapshot.agents))
+    if (snapshot.settings) setSettings(snapshot.settings)
+    if (snapshot.allowedWorkspaces) setAllowedWorkspaces(snapshot.allowedWorkspaces)
+  }, [setProjects, setAgents, setConnections, setGoals, setWorkItems])
 
   const appendSessionOutput = useCallback((agentId: string, data: string) => {
     const clean = stripAnsi(data)
@@ -630,27 +643,47 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     toast.success('Meta criada')
   }, [setGoals, serviceOnline, applySnapshot])
 
-  const addProject = useCallback((input: { name: string; path: string; description: string }) => {
-    const proj: Project = { id: crypto.randomUUID(), ...input }
+  const addProject = useCallback(async (input: { name: string; path: string; description: string; copyTeamFromProjectId?: string }) => {
+    const id = crypto.randomUUID()
+    const copyFrom = input.copyTeamFromProjectId?.trim() || undefined
     if (serviceOnline) {
       // Online: o core valida o caminho (recusa pastas de sistema), autoriza o workspace e
       // ativa o primeiro projeto. Só aparece na tela se o core aceitar (sem projeto "fantasma").
-      void api.createProject(proj).then(({ snapshot, error }) => {
-        if (!snapshot) { toast.error(error ?? 'Não foi possível criar o projeto'); return }
-        applySnapshot(snapshot)
-        toast.success(`Projeto ${input.name} criado`)
+      const { snapshot, error } = await api.createProject({
+        id,
+        name: input.name,
+        path: input.path,
+        description: input.description,
+        ...(copyFrom ? { copyTeamFromProjectId: copyFrom } : {}),
       })
-      return
+      if (!snapshot) { toast.error(error ?? 'Não foi possível criar o projeto'); return false }
+      applySnapshot(snapshot)
+      toast.success(copyFrom ? `Projeto ${input.name} criado com a equipe copiada` : `Projeto ${input.name} criado`)
+      return true
     }
+    const proj: Project = { id, name: input.name, path: input.path, description: input.description }
     setProjects((current) => [...current, { ...proj, active: current.length === 0 }])
     toast.success(`Projeto ${input.name} criado (offline)`)
+    return true
   }, [setProjects, serviceOnline, applySnapshot])
 
-  const setActiveProject = useCallback((id: string) => {
+  const setActiveProject = useCallback(async (id: string) => {
+    if (serviceOnline) {
+      // Não inverte `active` otimisticamente: aguarda o Core encerrar sessões e devolver o snapshot do novo projeto.
+      const { snapshot, error } = await api.activateProject(id)
+      if (!snapshot) {
+        toast.error(error ?? 'Não foi possível ativar o projeto')
+        return false
+      }
+      applySnapshot(snapshot)
+      const activated = snapshot.projects.find((item) => item.id === id) ?? projects.find((item) => item.id === id)
+      if (activated) toast.success(`Projeto ativo: ${activated.name}`)
+      return true
+    }
     setProjects((current) => current.map((project) => ({ ...project, active: project.id === id })))
-    if (serviceOnline) void api.activateProject(id).then(applySnapshot)
     const project = projects.find((item) => item.id === id)
     if (project) toast.success(`Projeto ativo: ${project.name}`)
+    return true
   }, [setProjects, projects, serviceOnline, applySnapshot])
 
   const checkCli = useCallback((id: string) => {
@@ -906,10 +939,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         if (target.active && rest.length && !rest.some((project) => project.active)) rest[0] = { ...rest[0], active: true }
         return rest
       })
+      if (target.active) {
+        setAgents([])
+        setConnections([])
+        setGoals([])
+        setWorkItems([])
+        setSelectedId(null)
+        setLiveSessions({})
+        setTerminalLines({})
+        rawOutputRef.current = {}
+      }
     }
     toast.success(`Projeto ${target.name} removido do Vértice (a pasta no disco foi mantida)`)
     return true
-  }, [projects, serviceOnline, applySnapshot, setProjects])
+  }, [projects, serviceOnline, applySnapshot, setProjects, setAgents, setConnections, setGoals, setWorkItems])
 
   const savePromptTemplate = useCallback(async (name: string, prompt: string) => {
     if (!serviceOnline) { toast.error('A biblioteca de prompts fica no serviço local, que está offline'); return false }

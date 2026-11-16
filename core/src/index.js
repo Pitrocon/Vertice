@@ -14,14 +14,17 @@ import { checkRequestOrigin, isFileOrigin, isLocalHost, isLocalOrigin, tokenFrom
 import {
   configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName, registerAgentSession, trackedBroadcast,
   syncMemoryFile, syncAllMemoryFiles, flushTranscripts, forgetAgentTranscript, forgetAllTranscripts, onWorkItemRemoved, sendAgentMessage, approveWorkItem, releaseDependents,
+  resetForProjectSwitch, baselineHandoffFiles,
 } from './orchestrator.js'
 import {
   listSessions, listEvents, recordEvent,
   getWorkspaceSnapshot, loadDemoData, clearWorkspaceData,
   createProject, activateProject, getProject, allowProjectWorkspace,
+  getActiveProjectId, getAgentProjectId, getGoalProjectId, getWorkItem, getWorkItemProjectId, listWorkItemsForProject,
+  getProjectCounts, deleteProjectCascade, CrossProjectError,
   upsertAgent, patchAgent, deleteAgent,
   getAgent, setAgentMemory, clearAgentMemory, wouldCreateCycle, setAgentParent,
-  deleteWorkItem, patchGoal, deleteGoal, patchProject, deleteProject, releaseProjectWorkspace,
+  deleteWorkItem, patchGoal, deleteGoal, patchProject, releaseProjectWorkspace,
   createConnection, getConnection, patchConnection, deleteConnection, createGoal, createWorkItem, patchWorkItem,
   getSettings, getSetting, setSetting,
   listAllowedWorkspaces, addAllowedWorkspace, removeAllowedWorkspace,
@@ -225,6 +228,7 @@ const AGENT_STATUSES = ['idle', 'working', 'paused', 'queued']
 const WORK_STATUSES = ['todo', 'doing', 'review', 'done', 'failed']
 const PRIORITIES = ['alta', 'media', 'baixa']
 const isFilledText = (value) => typeof value === 'string' && value.trim() !== ''
+const NO_ACTIVE_PROJECT_ERROR = 'Crie ou ative um projeto antes de criar agentes, metas ou tarefas.'
 
 // Encerra todas as sessões vivas (usado ao trocar/limpar o workspace: os agentes deixam de existir).
 function endAllSessions() {
@@ -235,6 +239,8 @@ function endAllSessions() {
 
 // Carrega os dados de DEMONSTRAÇÃO (equipe e projetos de exemplo). Preserva aprovação de CLIs/políticas.
 app.post('/api/workspace/reset', (_req, res) => {
+  flushTranscripts()
+  resetForProjectSwitch(null)
   endAllSessions()
   forgetAllTranscripts()
   loadDemoData()
@@ -245,6 +251,8 @@ app.post('/api/workspace/reset', (_req, res) => {
 // Operar do zero: apaga projetos, agentes, conexões, metas, tarefas, workspaces e eventos.
 // Mantém apenas as configurações das CLIs (settings).
 app.post('/api/workspace/clear', (_req, res) => {
+  flushTranscripts()
+  resetForProjectSwitch(null)
   endAllSessions()
   forgetAllTranscripts()
   clearWorkspaceData()
@@ -306,8 +314,11 @@ app.delete('/api/settings/workspaces/:id', (req, res) => {
 // Criar projeto: o workspace do projeto passa a ser um workspace permitido (após validação de
 // segurança do caminho) e o primeiro projeto já nasce ativo.
 app.post('/api/projects', (req, res) => {
-  const { id, name, path, description } = req.body ?? {}
+  const { id, name, path, description, copyTeamFromProjectId } = req.body ?? {}
   if (!name || !path) return res.status(400).json({ error: 'name e path são obrigatórios' })
+  if (copyTeamFromProjectId && !getProject(copyTeamFromProjectId)) {
+    return res.status(404).json({ error: 'Projeto de origem para copiar equipe não encontrado' })
+  }
   let safePath
   try {
     safePath = assertSafeProjectPath(expandEnvVars(String(path).trim()))
@@ -316,8 +327,14 @@ app.post('/api/projects', (req, res) => {
     return res.status(500).json({ error: `Falha ao validar o caminho: ${error.message}` })
   }
   const projectId = id || randomUUID()
-  createProject({ id: projectId, name, path: safePath, description: description ?? '' })
+  try {
+    createProject({ id: projectId, name, path: safePath, description: description ?? '', copyTeamFromProjectId })
+  } catch (error) {
+    if (error.status === 404) return res.status(404).json({ error: error.message })
+    return res.status(500).json({ error: `Falha ao criar o projeto: ${error.message}` })
+  }
   allowProjectWorkspace({ id: projectId, path: safePath })
+  if (getActiveProjectId() === projectId) syncAllMemoryFiles()
   recordEvent(null, `Projeto ${name} criado (${safePath})`, 'create')
   res.json(broadcastSnapshot())
 })
@@ -325,13 +342,26 @@ app.post('/api/projects', (req, res) => {
 app.post('/api/projects/:id/activate', (req, res) => {
   const project = getProject(req.params.id)
   if (!project) return res.status(404).json({ error: 'Projeto não encontrado' })
+  let safePath
   try {
-    allowProjectWorkspace({ id: project.id, path: assertSafeProjectPath(project.path) })
+    safePath = assertSafeProjectPath(project.path)
   } catch (error) {
     if (error instanceof WorkspaceError) return res.status(403).json({ error: error.message })
     return res.status(500).json({ error: `Falha ao validar o caminho: ${error.message}` })
   }
+  const oldActiveId = getActiveProjectId()
+  if (oldActiveId === project.id) {
+    allowProjectWorkspace({ id: project.id, path: safePath })
+    return res.json(getWorkspaceSnapshot())
+  }
+  flushTranscripts()
+  resetForProjectSwitch(oldActiveId, { nextProjectPath: safePath })
+  endAllSessions()
+  forgetAllTranscripts()
+  allowProjectWorkspace({ id: project.id, path: safePath })
   activateProject(project.id)
+  baselineHandoffFiles()
+  syncAllMemoryFiles()
   recordEvent(null, `Projeto ativo alterado para ${project.name}`, 'system')
   res.json(broadcastSnapshot())
 })
@@ -362,22 +392,54 @@ app.patch('/api/projects/:id', (req, res) => {
   if (fields.path && fields.path.toLowerCase() !== project.path.toLowerCase()) {
     releaseProjectWorkspace(project.id)
     allowProjectWorkspace({ id: project.id, path: fields.path })
+    if (project.active) {
+      baselineHandoffFiles()
+      syncAllMemoryFiles()
+    }
   }
   recordEvent(null, `Projeto ${fields.name ?? project.name} atualizado`, 'system')
   res.json(broadcastSnapshot())
 })
 
-// Excluir projeto: só tira do Vértice. Os ARQUIVOS da pasta no disco não são tocados.
+// Excluir projeto: só tira do Vértice após confirmação explícita (?confirm=true).
+// Os ARQUIVOS da pasta no disco NUNCA são apagados.
 app.delete('/api/projects/:id', (req, res) => {
   const project = getProject(req.params.id)
   if (!project) return res.status(404).json({ error: 'Projeto não encontrado' })
-  deleteProject(project.id)
+  if (req.query.confirm !== 'true') {
+    return res.status(409).json({
+      error: 'Confirme a exclusão do projeto.',
+      counts: getProjectCounts(project.id),
+    })
+  }
+  if (project.active) {
+    flushTranscripts()
+    resetForProjectSwitch(project.id)
+    endAllSessions()
+  }
+  const deleted = deleteProjectCascade(project.id)
+  if (!deleted) return res.status(404).json({ error: 'Projeto não encontrado' })
+  for (const agentId of deleted.agentIds) {
+    forgetAgentTranscript(agentId)
+  }
   releaseProjectWorkspace(project.id)
+  if (deleted.nextActiveId) {
+    const nextProject = getProject(deleted.nextActiveId)
+    if (nextProject) {
+      try {
+        allowProjectWorkspace({ id: nextProject.id, path: assertSafeProjectPath(nextProject.path) })
+      } catch { /* mantém permissão existente se falhar */ }
+    }
+    baselineHandoffFiles()
+    syncAllMemoryFiles()
+  }
   recordEvent(null, `Projeto ${project.name} excluído (a pasta no disco foi mantida)`, 'system')
   res.json(broadcastSnapshot())
 })
 
 app.post('/api/agents', (req, res) => {
+  const activeProjectId = getActiveProjectId()
+  if (!activeProjectId) return res.status(409).json({ error: NO_ACTIVE_PROJECT_ERROR })
   const agent = req.body ?? {}
   if (!agent.id || !agent.name || !agent.runtime) {
     return res.status(400).json({ error: 'id, name e runtime são obrigatórios' })
@@ -385,10 +447,15 @@ app.post('/api/agents', (req, res) => {
   // O supervisor vive em dois lugares: `createdBy` (usado para trocar supervisor e detectar ciclos) e a
   // conexão do organograma. Aceita `parentId` ou `createdBy` e grava os dois de forma consistente.
   const parentId = agent.parentId || agent.createdBy || ''
-  if (parentId && (parentId === agent.id || !getAgent(parentId, { transcript: false }))) {
-    return res.status(400).json({ error: 'Supervisor inválido' })
+  if (parentId) {
+    if (parentId === agent.id || !getAgent(parentId, { transcript: false })) {
+      return res.status(400).json({ error: 'Supervisor inválido' })
+    }
+    if (getAgentProjectId(parentId) !== activeProjectId) {
+      return res.status(400).json({ error: 'O supervisor precisa pertencer ao projeto ativo' })
+    }
   }
-  upsertAgent({ ...agent, createdBy: parentId || null })
+  upsertAgent({ ...agent, createdBy: parentId || null, projectId: activeProjectId })
   if (parentId) {
     createConnection({ id: randomUUID(), source: parentId, target: agent.id, label: 'delega', active: false })
   }
@@ -398,12 +465,38 @@ app.post('/api/agents', (req, res) => {
 })
 
 app.post('/api/agents/batch', (req, res) => {
+  const activeProjectId = getActiveProjectId()
+  if (!activeProjectId) return res.status(409).json({ error: NO_ACTIVE_PROJECT_ERROR })
   const { agents = [], connections = [], managerUpdate, eventMessage } = req.body ?? {}
+  if (managerUpdate?.id) {
+    if (!getAgent(managerUpdate.id, { transcript: false }) || getAgentProjectId(managerUpdate.id) !== activeProjectId) {
+      return res.status(400).json({ error: 'Agente gerente não pertence ao projeto ativo' })
+    }
+  }
+  const batchIds = new Set(agents.filter((a) => a?.id && a?.name).map((a) => a.id))
+  for (const agent of agents) {
+    if (!agent?.id || !agent?.name) continue
+    const parentId = agent.parentId || agent.createdBy || ''
+    if (!parentId) continue
+    if (parentId === agent.id) return res.status(400).json({ error: 'Supervisor inválido' })
+    if (!batchIds.has(parentId) && (!getAgent(parentId, { transcript: false }) || getAgentProjectId(parentId) !== activeProjectId)) {
+      return res.status(400).json({ error: 'O supervisor precisa pertencer ao projeto ativo' })
+    }
+  }
+  for (const conn of connections) {
+    if (!conn?.source || !conn?.target) continue
+    if (conn.source === conn.target) return res.status(400).json({ error: 'Um agente não pode conectar a si mesmo' })
+    for (const endpoint of [conn.source, conn.target]) {
+      if (!batchIds.has(endpoint) && (!getAgent(endpoint, { transcript: false }) || getAgentProjectId(endpoint) !== activeProjectId)) {
+        return res.status(400).json({ error: 'Os dois agentes precisam ser do mesmo projeto.' })
+      }
+    }
+  }
   if (managerUpdate?.id) {
     patchAgent(managerUpdate.id, managerUpdate)
   }
   for (const agent of agents) {
-    if (agent.id && agent.name) upsertAgent(agent)
+    if (agent.id && agent.name) upsertAgent({ ...agent, projectId: activeProjectId })
   }
   for (const conn of connections) {
     if (conn.source && conn.target) {
@@ -423,6 +516,7 @@ app.patch('/api/agents/:id', (req, res) => {
   const id = req.params.id
   const current = getAgent(id, { transcript: false })
   if (!current) return res.status(404).json({ error: 'Agente não encontrado' })
+  const agentProjectId = getAgentProjectId(id)
   const body = req.body ?? {}
   const fields = {}
   for (const key of ['name', 'role', 'runtime', 'model', 'prompt', 'task']) {
@@ -449,6 +543,7 @@ app.patch('/api/agents/:id', (req, res) => {
     const parentId = body.parentId || ''
     if (parentId) {
       if (parentId === id || !getAgent(parentId, { transcript: false })) return res.status(400).json({ error: 'Supervisor inválido' })
+      if (getAgentProjectId(parentId) !== agentProjectId) return res.status(400).json({ error: 'O supervisor precisa pertencer ao mesmo projeto do agente' })
       if (wouldCreateCycle(id, parentId)) return res.status(400).json({ error: 'Esse supervisor criaria um ciclo no organograma' })
     }
     if ((current.createdBy ?? '') !== parentId) setAgentParent(id, parentId, randomUUID())
@@ -546,7 +641,15 @@ app.post('/api/connections', (req, res) => {
   if (!getAgent(source, { transcript: false }) || !getAgent(target, { transcript: false })) {
     return res.status(400).json({ error: 'Os dois agentes da conexão precisam existir' })
   }
-  createConnection({ id: id || randomUUID(), source, target, active, label: fields.label ?? undefined, sourceHandle: fields.sourceHandle, targetHandle: fields.targetHandle })
+  if (getAgentProjectId(source) !== getAgentProjectId(target)) {
+    return res.status(400).json({ error: 'Os dois agentes precisam ser do mesmo projeto.' })
+  }
+  try {
+    createConnection({ id: id || randomUUID(), source, target, active, label: fields.label ?? undefined, sourceHandle: fields.sourceHandle, targetHandle: fields.targetHandle })
+  } catch (err) {
+    if (err instanceof CrossProjectError || err.status === 400) return res.status(400).json({ error: err.message })
+    throw err
+  }
   syncAllMemoryFiles()
   recordEvent(source, `Nova conexão com ${target}`, 'system')
   res.json(broadcastSnapshot())
@@ -571,9 +674,11 @@ app.delete('/api/connections/:id', (req, res) => {
 })
 
 app.post('/api/goals', (req, res) => {
+  const activeProjectId = getActiveProjectId()
+  if (!activeProjectId) return res.status(409).json({ error: NO_ACTIVE_PROJECT_ERROR })
   const { id, title, description } = req.body ?? {}
   if (!title) return res.status(400).json({ error: 'title é obrigatório' })
-  createGoal({ id: id || randomUUID(), title, description: description ?? '' })
+  createGoal({ id: id || randomUUID(), title, description: description ?? '', projectId: activeProjectId })
   recordEvent('gerente', `Meta criada: ${title}`, 'create')
   res.json(broadcastSnapshot())
 })
@@ -597,9 +702,9 @@ app.delete('/api/goals/:id', (req, res) => {
 // G6: valida `dependsOn` (lista de ids de tarefas) e `parentTaskId`. Recusa a própria tarefa, ids que não
 // existem e ciclos (A espera B que espera A nunca andaria). Retorna { fields } ou { error }.
 const MAX_DEPENDENCIES = 20
-function readDependencyFields(body, selfId) {
+function readDependencyFields(body, selfId, projectId = getActiveProjectId()) {
   const fields = {}
-  const byId = new Map(getWorkspaceSnapshot().workItems.map((w) => [w.id, w]))
+  const byId = new Map(listWorkItemsForProject(projectId).map((w) => [w.id, w]))
   const dependsOnReaches = (start, target) => {
     const seen = new Set()
     const stack = [start]
@@ -642,20 +747,33 @@ function readDependencyFields(body, selfId) {
 }
 
 app.post('/api/work-items', (req, res) => {
+  const activeProjectId = getActiveProjectId()
+  if (!activeProjectId) return res.status(409).json({ error: NO_ACTIVE_PROJECT_ERROR })
   const { id, title, description, status, assigneeId, goalId, priority } = req.body ?? {}
   if (!title) return res.status(400).json({ error: 'title é obrigatório' })
-  const deps = readDependencyFields(req.body ?? {}, null)
+  if (assigneeId !== undefined && assigneeId !== null && assigneeId !== '') {
+    if (!getAgent(assigneeId, { transcript: false }) || getAgentProjectId(assigneeId) !== activeProjectId) {
+      return res.status(400).json({ error: 'Responsável não encontrado no projeto ativo' })
+    }
+  }
+  if (goalId !== undefined && goalId !== null && goalId !== '') {
+    if (getGoalProjectId(goalId) !== activeProjectId) {
+      return res.status(400).json({ error: 'Meta não encontrada no projeto ativo' })
+    }
+  }
+  const deps = readDependencyFields(req.body ?? {}, null, activeProjectId)
   if (deps.error) return res.status(400).json({ error: deps.error })
   createWorkItem({
     id: id || randomUUID(),
     title,
     description: typeof description === 'string' ? description : '',
     status: status ?? 'todo',
-    assigneeId,
-    goalId,
+    assigneeId: assigneeId || null,
+    goalId: goalId || null,
     priority: priority ?? 'media',
     parentTaskId: deps.fields.parentTaskId ?? undefined,
     dependsOn: deps.fields.dependsOn ?? undefined,
+    projectId: activeProjectId,
   })
   recordEvent(assigneeId ?? 'gerente', `Tarefa criada: ${title}`, 'create')
   res.json(broadcastSnapshot())
@@ -664,6 +782,9 @@ app.post('/api/work-items', (req, res) => {
 // Editar tarefa. `assigneeId`/`goalId` vazios removem o responsável/a meta. O resultado só é gravado
 // pelas rotas de conclusão, nunca por aqui.
 app.patch('/api/work-items/:id', (req, res) => {
+  const previous = getWorkItem(req.params.id)
+  if (!previous) return res.status(404).json({ error: 'Tarefa não encontrada' })
+  const itemProjectId = getWorkItemProjectId(previous.id)
   const body = req.body ?? {}
   const fields = {}
   if (body.title !== undefined) {
@@ -684,20 +805,24 @@ app.patch('/api/work-items/:id', (req, res) => {
   }
   if (body.assigneeId !== undefined) {
     fields.assigneeId = body.assigneeId || null
-    if (fields.assigneeId && !getAgent(fields.assigneeId, { transcript: false })) return res.status(400).json({ error: 'Responsável não encontrado' })
+    if (fields.assigneeId && (!getAgent(fields.assigneeId, { transcript: false }) || getAgentProjectId(fields.assigneeId) !== itemProjectId)) {
+      return res.status(400).json({ error: 'Responsável não encontrado no projeto da tarefa' })
+    }
   }
   if (body.goalId !== undefined) {
     fields.goalId = body.goalId || null
-    if (fields.goalId && !getWorkspaceSnapshot().goals.some((goal) => goal.id === fields.goalId)) return res.status(400).json({ error: 'Meta não encontrada' })
+    if (fields.goalId && getGoalProjectId(fields.goalId) !== itemProjectId) {
+      return res.status(400).json({ error: 'Meta não encontrada no projeto da tarefa' })
+    }
   }
-  const previous = getWorkspaceSnapshot().workItems.find((w) => w.id === req.params.id)
-  if (!previous) return res.status(404).json({ error: 'Tarefa não encontrada' })
-  const deps = readDependencyFields(body, previous.id)
+  const deps = readDependencyFields(body, previous.id, itemProjectId)
   if (deps.error) return res.status(400).json({ error: deps.error })
   Object.assign(fields, deps.fields)
   patchWorkItem(previous.id, fields)
   // G6: chegou a "Concluído" por aqui (mover o card ou editar): libera as tarefas que dependiam dela.
-  if (fields.status === 'done' && previous.status !== 'done') releaseDependents(previous.id)
+  if (fields.status === 'done' && previous.status !== 'done' && itemProjectId === getActiveProjectId()) {
+    releaseDependents(previous.id)
+  }
   res.json(broadcastSnapshot())
 })
 
@@ -714,7 +839,7 @@ app.delete('/api/work-items/:id', (req, res) => {
 function resolveSessionCwd(requestedCwd) {
   if (requestedCwd && requestedCwd.trim() !== '') return requestedCwd
   const snapshot = getWorkspaceSnapshot()
-  const active = snapshot.projects.find((p) => p.active) ?? snapshot.projects[0]
+  const active = snapshot.projects.find((p) => p.active)
   return active?.path ?? ''
 }
 
@@ -769,6 +894,7 @@ app.post('/api/work-items/:id/reject', async (req, res) => {
 // B5: Gerente real cria subagentes + conexoes + tarefas a partir de um objetivo.
 // Espera { managerId, objective, team: [{ name, role, runtime, model, prompt }], maxAgents }.
 app.post('/api/orchestrator/delegate', (req, res) => {
+  if (!getActiveProjectId()) return res.status(409).json({ error: NO_ACTIVE_PROJECT_ERROR })
   const { managerId = 'gerente', objective, team = [], maxAgents = 12 } = req.body ?? {}
   if (!objective || typeof objective !== 'string') {
     return res.status(400).json({ error: 'objective é obrigatório' })

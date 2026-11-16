@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
+import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -13,6 +14,40 @@ const dataDir = process.env.VERTICE_DATA_DIR
 mkdirSync(dataDir, { recursive: true })
 
 const db = new DatabaseSync(join(dataDir, 'vertice.db'))
+const DB_CLOSERS_KEY = Symbol.for('vertice.dbClosers')
+let dbClosed = false
+
+export function closeDatabase() {
+  if (dbClosed) return
+  dbClosed = true
+  try { db.close() } catch { /* já fechado */ }
+  globalThis[DB_CLOSERS_KEY]?.delete(closeDatabase)
+}
+;(globalThis[DB_CLOSERS_KEY] ??= new Set()).add(closeDatabase)
+
+let txDepth = 0
+export function withTransaction(fn) {
+  const isOuter = txDepth === 0
+  const sp = `sp_${txDepth}`
+  db.exec(isOuter ? 'BEGIN' : `SAVEPOINT ${sp}`)
+  txDepth += 1
+  try {
+    const result = fn()
+    txDepth -= 1
+    db.exec(isOuter ? 'COMMIT' : `RELEASE ${sp}`)
+    return result
+  } catch (error) {
+    txDepth -= 1
+    try {
+      if (isOuter) db.exec('ROLLBACK')
+      else {
+        db.exec(`ROLLBACK TO ${sp}`)
+        db.exec(`RELEASE ${sp}`)
+      }
+    } catch { /* transação já fechada */ }
+    throw error
+  }
+}
 
 // Workspace padrao realista e criavel (substitui o antigo C:\work\atlas inexistente).
 // Resolvido em runtime a partir do perfil do usuario, nunca hardcode de um usuario especifico.
@@ -97,7 +132,7 @@ db.exec(`
 // ---------------------------------------------------------------------------
 // Migracoes idempotentes baseadas em meta.schema_version. Nunca apagam dados.
 // ---------------------------------------------------------------------------
-const SCHEMA_VERSION = 6
+const SCHEMA_VERSION = 7
 
 function getSchemaVersion() {
   const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()
@@ -190,6 +225,23 @@ function runMigrations() {
   if (current < 6) {
     for (const name of ['source_handle', 'target_handle']) {
       if (!columnExists('connections', name)) db.exec(`ALTER TABLE connections ADD COLUMN ${name} TEXT`)
+    }
+  }
+
+  // v7 (G7) -> isolamento de dados por projeto (project_id em agentes, conexões, metas e tarefas).
+  if (current < 7) {
+    for (const table of ['agents', 'connections', 'goals', 'work_items']) {
+      if (!columnExists(table, 'project_id')) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN project_id TEXT`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_project ON ${table}(project_id)`)
+    }
+    const target = db.prepare('SELECT id FROM projects WHERE active = 1 LIMIT 1').get()
+      ?? db.prepare('SELECT id FROM projects ORDER BY rowid LIMIT 1').get()
+    if (target) {
+      for (const table of ['agents', 'connections', 'goals', 'work_items']) {
+        db.prepare(`UPDATE ${table} SET project_id = ? WHERE project_id IS NULL`).run(target.id)
+      }
     }
   }
 
@@ -292,21 +344,23 @@ export function clearWorkspaceData() {
 // Carrega os dados de DEMONSTRAÇÃO (equipe, projetos, metas e tarefas de exemplo). Só roda sob
 // pedido explícito (POST /api/workspace/reset). Substitui os dados de trabalho; preserva `settings`.
 export function loadDemoData() {
-  clearWorkspaceData()
-  const projectStmt = db.prepare('INSERT INTO projects (id, name, path, description, active) VALUES (?, ?, ?, ?, ?)')
-  for (const p of INITIAL_PROJECTS) projectStmt.run(p.id, p.name, p.path, p.description, p.active)
-  const agentStmt = db.prepare('INSERT INTO agents (id, name, role, kind, runtime, model, status, task, progress, prompt, x, y, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-  for (const a of INITIAL_AGENTS) agentStmt.run(a.id, a.name, a.role, a.kind, a.runtime, a.model, a.status, a.task, a.progress, a.prompt, a.x, a.y, a.createdBy)
-  const connStmt = db.prepare('INSERT INTO connections (id, source, target, label, active) VALUES (?, ?, ?, ?, ?)')
-  for (const c of INITIAL_CONNECTIONS) connStmt.run(c.id, c.source, c.target, c.label, c.active)
-  const goalStmt = db.prepare('INSERT INTO goals (id, title, description) VALUES (?, ?, ?)')
-  for (const g of INITIAL_GOALS) goalStmt.run(g.id, g.title, g.description)
-  const wiStmt = db.prepare('INSERT INTO work_items (id, title, status, assignee_id, goal_id, priority) VALUES (?, ?, ?, ?, ?, ?)')
-  for (const w of INITIAL_WORK_ITEMS) wiStmt.run(w.id, w.title, w.status, w.assigneeId, w.goalId, w.priority)
-  const wsStmt = db.prepare('INSERT INTO allowed_workspaces (id, path) VALUES (?, ?)')
-  wsStmt.run('ws-atlas', DEFAULT_ATLAS_PATH)
-  wsStmt.run('ws-intranet', DEFAULT_INTRANET_PATH)
-  setWorkspaceMode('demo')
+  return withTransaction(() => {
+    clearWorkspaceData()
+    const projectStmt = db.prepare('INSERT INTO projects (id, name, path, description, active) VALUES (?, ?, ?, ?, ?)')
+    for (const p of INITIAL_PROJECTS) projectStmt.run(p.id, p.name, p.path, p.description, p.active)
+    const agentStmt = db.prepare('INSERT INTO agents (id, name, role, kind, runtime, model, status, task, progress, prompt, x, y, created_by, project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    for (const a of INITIAL_AGENTS) agentStmt.run(a.id, a.name, a.role, a.kind, a.runtime, a.model, a.status, a.task, a.progress, a.prompt, a.x, a.y, a.createdBy, 'proj-atlas')
+    const connStmt = db.prepare('INSERT INTO connections (id, source, target, label, active, project_id) VALUES (?, ?, ?, ?, ?, ?)')
+    for (const c of INITIAL_CONNECTIONS) connStmt.run(c.id, c.source, c.target, c.label, c.active, 'proj-atlas')
+    const goalStmt = db.prepare('INSERT INTO goals (id, title, description, project_id) VALUES (?, ?, ?, ?)')
+    for (const g of INITIAL_GOALS) goalStmt.run(g.id, g.title, g.description, 'proj-atlas')
+    const wiStmt = db.prepare('INSERT INTO work_items (id, title, status, assignee_id, goal_id, priority, project_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    for (const w of INITIAL_WORK_ITEMS) wiStmt.run(w.id, w.title, w.status, w.assigneeId, w.goalId, w.priority, 'proj-atlas')
+    const wsStmt = db.prepare('INSERT INTO allowed_workspaces (id, path) VALUES (?, ?)')
+    wsStmt.run('ws-atlas', DEFAULT_ATLAS_PATH)
+    wsStmt.run('ws-intranet', DEFAULT_INTRANET_PATH)
+    setWorkspaceMode('demo')
+  })
 }
 
 // Processos PTY não sobrevivem ao fechamento do programa. Se ele foi fechado com agentes trabalhando,
@@ -327,8 +381,10 @@ if (getWorkspaceMode() === null) {
   setWorkspaceMode(hasData ? 'demo' : 'clean')
 }
 
-function mapProject(row) {
-  return { id: row.id, name: row.name, path: row.path, description: row.description, active: Boolean(row.active) }
+function mapProject(row, counts) {
+  const out = { id: row.id, name: row.name, path: row.path, description: row.description, active: Boolean(row.active) }
+  if (counts) out.counts = counts
+  return out
 }
 
 // `transcript`: inclui a última conversa do terminal (até ~15 mil caracteres por agente). Só vai no
@@ -423,24 +479,207 @@ export function removeAllowedWorkspace(id) {
   db.prepare('DELETE FROM allowed_workspaces WHERE id = ?').run(id)
 }
 
-export function getWorkspaceSnapshot({ transcripts = false } = {}) {
+export class CrossProjectError extends Error {
+  constructor(message = 'Os dois agentes precisam ser do mesmo projeto.') {
+    super(message)
+    this.name = 'CrossProjectError'
+    this.status = 400
+  }
+}
+
+export function getActiveProjectId() {
+  const row = db.prepare('SELECT id FROM projects WHERE active = 1 LIMIT 1').get()
+  return row ? row.id : null
+}
+
+export function getAgentProjectId(id) {
+  const row = db.prepare('SELECT project_id FROM agents WHERE id = ?').get(id)
+  return row ? (row.project_id ?? null) : null
+}
+
+export function getGoalProjectId(id) {
+  const row = db.prepare('SELECT project_id FROM goals WHERE id = ?').get(id)
+  return row ? (row.project_id ?? null) : null
+}
+
+export function getWorkItem(id) {
+  const row = db.prepare('SELECT * FROM work_items WHERE id = ?').get(id)
+  return row ? mapWorkItem(row) : null
+}
+
+export function getWorkItemProjectId(id) {
+  const row = db.prepare('SELECT project_id FROM work_items WHERE id = ?').get(id)
+  return row ? (row.project_id ?? null) : null
+}
+
+export function listWorkItemsForProject(projectId) {
+  if (!projectId) return []
+  return db.prepare('SELECT * FROM work_items WHERE project_id = ? ORDER BY rowid').all(projectId).map(mapWorkItem)
+}
+
+export function getProjectCounts(id) {
+  const agents = db.prepare('SELECT COUNT(*) AS count FROM agents WHERE project_id = ?').get(id).count
+  const connections = db.prepare('SELECT COUNT(*) AS count FROM connections WHERE project_id = ?').get(id).count
+  const goals = db.prepare('SELECT COUNT(*) AS count FROM goals WHERE project_id = ?').get(id).count
+  const wi = db.prepare(`
+    SELECT COUNT(*) AS tasks,
+           COALESCE(SUM(CASE WHEN status != 'done' THEN 1 ELSE 0 END), 0) AS open_tasks
+    FROM work_items
+    WHERE project_id = ?
+  `).get(id)
   return {
-    projects: db.prepare('SELECT * FROM projects').all().map(mapProject),
-    agents: db.prepare('SELECT * FROM agents').all().map((row) => mapAgent(row, { transcript: transcripts })),
-    connections: db.prepare('SELECT * FROM connections').all().map(mapConnection),
-    goals: db.prepare('SELECT * FROM goals').all().map(mapGoal),
-    workItems: db.prepare('SELECT * FROM work_items').all().map(mapWorkItem),
+    agents: Number(agents),
+    connections: Number(connections),
+    goals: Number(goals),
+    tasks: Number(wi.tasks),
+    openTasks: Number(wi.open_tasks ?? 0),
+  }
+}
+
+function countByProject(sql) {
+  const map = new Map()
+  for (const row of db.prepare(sql).all()) {
+    if (row.project_id) map.set(row.project_id, Number(row.count))
+  }
+  return map
+}
+
+export function getWorkspaceSnapshot({ transcripts = false } = {}) {
+  const agentCounts = countByProject('SELECT project_id, COUNT(*) AS count FROM agents WHERE project_id IS NOT NULL GROUP BY project_id')
+  const connCounts = countByProject('SELECT project_id, COUNT(*) AS count FROM connections WHERE project_id IS NOT NULL GROUP BY project_id')
+  const goalCounts = countByProject('SELECT project_id, COUNT(*) AS count FROM goals WHERE project_id IS NOT NULL GROUP BY project_id')
+  const taskCounts = new Map()
+  for (const row of db.prepare(`
+    SELECT project_id, COUNT(*) AS tasks, COALESCE(SUM(CASE WHEN status != 'done' THEN 1 ELSE 0 END), 0) AS open_tasks
+    FROM work_items
+    WHERE project_id IS NOT NULL
+    GROUP BY project_id
+  `).all()) {
+    taskCounts.set(row.project_id, { tasks: Number(row.tasks), openTasks: Number(row.open_tasks ?? 0) })
+  }
+
+  const projects = db.prepare('SELECT * FROM projects ORDER BY rowid').all().map((row) => {
+    const t = taskCounts.get(row.id) ?? { tasks: 0, openTasks: 0 }
+    return mapProject(row, {
+      agents: agentCounts.get(row.id) ?? 0,
+      connections: connCounts.get(row.id) ?? 0,
+      goals: goalCounts.get(row.id) ?? 0,
+      tasks: t.tasks,
+      openTasks: t.openTasks,
+    })
+  })
+
+  const activeId = getActiveProjectId()
+  const agents = activeId
+    ? db.prepare('SELECT * FROM agents WHERE project_id = ? ORDER BY rowid').all(activeId).map((row) => mapAgent(row, { transcript: transcripts }))
+    : []
+  const connections = activeId
+    ? db.prepare('SELECT * FROM connections WHERE project_id = ? ORDER BY rowid').all(activeId).map(mapConnection)
+    : []
+  const goals = activeId
+    ? db.prepare('SELECT * FROM goals WHERE project_id = ? ORDER BY rowid').all(activeId).map(mapGoal)
+    : []
+  const workItems = activeId
+    ? db.prepare('SELECT * FROM work_items WHERE project_id = ? ORDER BY rowid').all(activeId).map(mapWorkItem)
+    : []
+
+  return {
+    projects,
+    agents,
+    connections,
+    goals,
+    workItems,
     events: db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT 20').all().map(mapEvent),
     settings: getSettings(),
     allowedWorkspaces: listAllowedWorkspaces(),
   }
 }
 
+function slug(name) {
+  const s = String(name ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return s || 'agente'
+}
+
+export function cloneProjectTeam(sourceId, targetId, makeId = () => randomUUID().slice(0, 8)) {
+  return withTransaction(() => {
+    const agents = db.prepare('SELECT * FROM agents WHERE project_id = ? ORDER BY rowid').all(sourceId)
+    const agentIds = new Map()
+    const usedIds = new Set()
+    for (const a of agents) {
+      let nextId = `${slug(a.name)}-${makeId()}`
+      while (usedIds.has(nextId)) nextId = `${slug(a.name)}-${makeId()}-${usedIds.size}`
+      usedIds.add(nextId)
+      agentIds.set(a.id, nextId)
+    }
+
+    const insertAgent = db.prepare(`
+      INSERT INTO agents (id, name, role, kind, runtime, model, status, task, progress, prompt, x, y, created_by, memory, last_transcript, project_id)
+      VALUES (?, ?, ?, ?, ?, ?, 'idle', '', 0, ?, ?, ?, ?, '', '', ?)
+    `)
+    for (const a of agents) {
+      const nextId = agentIds.get(a.id)
+      const nextCreatedBy = a.created_by ? (agentIds.get(a.created_by) ?? null) : null
+      insertAgent.run(
+        nextId, a.name, a.role, a.kind, a.runtime, a.model,
+        a.prompt ?? '', a.x ?? 0, a.y ?? 0, nextCreatedBy, targetId,
+      )
+    }
+
+    const connections = db.prepare('SELECT * FROM connections WHERE project_id = ? ORDER BY rowid').all(sourceId)
+    const insertConn = db.prepare(`
+      INSERT INTO connections (id, source, target, label, active, source_handle, target_handle, project_id)
+      VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+    `)
+    let copied = 0
+    const usedConnIds = new Set()
+    for (const c of connections) {
+      const nextSource = agentIds.get(c.source)
+      const nextTarget = agentIds.get(c.target)
+      if (!nextSource || !nextTarget) continue
+      let nextConnId = `conn-${makeId()}`
+      while (usedConnIds.has(nextConnId)) nextConnId = `conn-${makeId()}-${usedConnIds.size}`
+      usedConnIds.add(nextConnId)
+      insertConn.run(
+        nextConnId, nextSource, nextTarget, c.label ?? null,
+        c.source_handle ?? null, c.target_handle ?? null, targetId,
+      )
+      copied += 1
+    }
+    return { agents: agents.length, connections: copied }
+  })
+}
+
 // O primeiro projeto criado (quando não há nenhum ativo) já nasce ativo.
-export function createProject({ id, name, path, description }) {
-  const hasActive = db.prepare('SELECT COUNT(*) AS count FROM projects WHERE active = 1').get().count > 0
-  db.prepare('INSERT INTO projects (id, name, path, description, active) VALUES (?, ?, ?, ?, ?)')
-    .run(id, name, path, description ?? '', hasActive ? 0 : 1)
+export function createProject({ id, name, path, description, copyTeamFromProjectId }) {
+  return withTransaction(() => {
+    if (copyTeamFromProjectId) {
+      const src = db.prepare('SELECT id FROM projects WHERE id = ?').get(copyTeamFromProjectId)
+      if (!src) {
+        const err = new Error('Projeto de origem para copiar equipe não encontrado.')
+        err.status = 404
+        throw err
+      }
+    }
+    const hadProjects = db.prepare('SELECT COUNT(*) AS count FROM projects').get().count > 0
+    const hasActive = db.prepare('SELECT COUNT(*) AS count FROM projects WHERE active = 1').get().count > 0
+    const projectId = id || randomUUID()
+    db.prepare('INSERT INTO projects (id, name, path, description, active) VALUES (?, ?, ?, ?, ?)')
+      .run(projectId, name, path, description ?? '', hasActive ? 0 : 1)
+    if (!hadProjects) {
+      for (const table of ['agents', 'connections', 'goals', 'work_items']) {
+        db.prepare(`UPDATE ${table} SET project_id = ? WHERE project_id IS NULL`).run(projectId)
+      }
+    }
+    if (copyTeamFromProjectId) {
+      cloneProjectTeam(copyTeamFromProjectId, projectId)
+    }
+    return getProject(projectId)
+  })
 }
 
 export function getProject(id) {
@@ -461,10 +700,33 @@ export function activateProject(id) {
   db.prepare('UPDATE projects SET active = CASE WHEN id = ? THEN 1 ELSE 0 END').run(id)
 }
 
+export function interruptProjectWork(projectId, errorMessage) {
+  if (!projectId) return
+  const now = new Date().toISOString()
+  withTransaction(() => {
+    db.prepare(`
+      UPDATE work_items
+      SET status = 'failed', error = ?, updated_at = ?
+      WHERE project_id = ? AND status = 'doing'
+    `).run(errorMessage, now, projectId)
+    db.prepare(`
+      UPDATE agents
+      SET status = 'idle', task = ''
+      WHERE project_id = ?
+    `).run(projectId)
+    db.prepare(`
+      UPDATE connections
+      SET active = 0
+      WHERE project_id = ?
+    `).run(projectId)
+  })
+}
+
 export function upsertAgent(agent) {
+  const projectId = agent.projectId !== undefined ? agent.projectId : getActiveProjectId()
   db.prepare(`
-    INSERT INTO agents (id, name, role, kind, runtime, model, status, task, progress, prompt, x, y, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO agents (id, name, role, kind, runtime, model, status, task, progress, prompt, x, y, created_by, project_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       role = excluded.role,
@@ -482,7 +744,7 @@ export function upsertAgent(agent) {
     agent.id, agent.name, agent.role, agent.kind ?? 'worker',
     agent.runtime, agent.model, agent.status ?? 'idle',
     agent.task ?? '', agent.progress ?? 0, agent.prompt ?? '',
-    agent.x ?? 0, agent.y ?? 0, agent.createdBy ?? null
+    agent.x ?? 0, agent.y ?? 0, agent.createdBy ?? null, projectId ?? null
   )
 }
 
@@ -551,15 +813,21 @@ export function wouldCreateCycle(agentId, parentId) {
 }
 
 export function setAgentParent(agentId, parentId, connectionId) {
-  const current = db.prepare('SELECT created_by FROM agents WHERE id = ?').get(agentId)
+  const current = db.prepare('SELECT created_by, project_id FROM agents WHERE id = ?').get(agentId)
   if (!current) return false
+  if (parentId) {
+    const parentRow = db.prepare('SELECT project_id FROM agents WHERE id = ?').get(parentId)
+    if (!parentRow || (parentRow.project_id ?? null) !== (current.project_id ?? null)) {
+      throw new CrossProjectError('Os dois agentes precisam ser do mesmo projeto.')
+    }
+  }
   if (current.created_by) {
     db.prepare('DELETE FROM connections WHERE source = ? AND target = ?').run(current.created_by, agentId)
   }
   db.prepare('UPDATE agents SET created_by = ? WHERE id = ?').run(parentId || null, agentId)
   if (parentId) {
-    db.prepare('INSERT OR REPLACE INTO connections (id, source, target, label, active) VALUES (?, ?, ?, ?, 0)')
-      .run(connectionId, parentId, agentId, 'delega')
+    db.prepare('INSERT OR REPLACE INTO connections (id, source, target, label, active, project_id) VALUES (?, ?, ?, ?, 0, ?)')
+      .run(connectionId, parentId, agentId, 'delega', current.project_id ?? null)
   }
   return true
 }
@@ -599,16 +867,34 @@ export function patchProject(id, { name, path, description }) {
   return true
 }
 
-// Remove o projeto (os ARQUIVOS no disco não são tocados). Se era o ativo e sobrou outro, ativa o primeiro.
+// Remove o projeto e tudo ligado ao seu project_id (os ARQUIVOS no disco não são tocados).
+// Se era o ativo e sobrou outro, ativa o primeiro. Preserva events e histórico de sessions.
+export function deleteProjectCascade(id) {
+  return withTransaction(() => {
+    const current = db.prepare('SELECT * FROM projects WHERE id = ?').get(id)
+    if (!current) return null
+    const agentIds = db.prepare('SELECT id FROM agents WHERE project_id = ?').all(id).map((r) => r.id)
+    const counts = getProjectCounts(id)
+    db.prepare('DELETE FROM connections WHERE project_id = ?').run(id)
+    db.prepare('DELETE FROM work_items WHERE project_id = ?').run(id)
+    db.prepare('DELETE FROM goals WHERE project_id = ?').run(id)
+    db.prepare('DELETE FROM agents WHERE project_id = ?').run(id)
+    db.prepare('DELETE FROM projects WHERE id = ?').run(id)
+    const wasActive = Boolean(current.active)
+    let nextActiveId = null
+    if (wasActive) {
+      const next = db.prepare('SELECT id FROM projects ORDER BY rowid LIMIT 1').get()
+      if (next) {
+        db.prepare('UPDATE projects SET active = CASE WHEN id = ? THEN 1 ELSE 0 END').run(next.id)
+        nextActiveId = next.id
+      }
+    }
+    return { agentIds, counts, wasActive, nextActiveId }
+  })
+}
+
 export function deleteProject(id) {
-  const current = db.prepare('SELECT * FROM projects WHERE id = ?').get(id)
-  if (!current) return false
-  db.prepare('DELETE FROM projects WHERE id = ?').run(id)
-  if (current.active) {
-    const next = db.prepare('SELECT id FROM projects ORDER BY rowid LIMIT 1').get()
-    if (next) db.prepare('UPDATE projects SET active = CASE WHEN id = ? THEN 1 ELSE 0 END').run(next.id)
-  }
-  return true
+  return Boolean(deleteProjectCascade(id))
 }
 
 // Libera o workspace permitido que ESTE projeto criou (ws-<id>). Entradas criadas pela TI na aba CLI's
@@ -618,8 +904,14 @@ export function releaseProjectWorkspace(projectId) {
 }
 
 export function createConnection({ id, source, target, label, active, sourceHandle, targetHandle }) {
-  db.prepare('INSERT OR REPLACE INTO connections (id, source, target, label, active, source_handle, target_handle) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(id, source, target, label ?? 'vincula', active ? 1 : 0, sourceHandle ?? null, targetHandle ?? null)
+  const src = db.prepare('SELECT id, project_id FROM agents WHERE id = ?').get(source)
+  const dst = db.prepare('SELECT id, project_id FROM agents WHERE id = ?').get(target)
+  if (!src || !dst || (src.project_id ?? null) !== (dst.project_id ?? null)) {
+    throw new CrossProjectError('Os dois agentes precisam ser do mesmo projeto.')
+  }
+  const projectId = src.project_id ?? null
+  db.prepare('INSERT OR REPLACE INTO connections (id, source, target, label, active, source_handle, target_handle, project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, source, target, label ?? 'vincula', active ? 1 : 0, sourceHandle ?? null, targetHandle ?? null, projectId)
   // Se o agente destino ainda não tinha supervisor (e não cria ciclo), vincula source como supervisor.
   const targetRow = db.prepare('SELECT created_by FROM agents WHERE id = ?').get(target)
   if (targetRow && !targetRow.created_by && !wouldCreateCycle(target, source)) {
@@ -661,21 +953,23 @@ export function setConnectionActive(source, target, active) {
     .run(active ? 1 : 0, source, target)
 }
 
-export function createGoal({ id, title, description }) {
-  db.prepare('INSERT INTO goals (id, title, description) VALUES (?, ?, ?)')
-    .run(id, title, description ?? '')
+export function createGoal({ id, title, description, projectId }) {
+  const pid = projectId !== undefined ? projectId : getActiveProjectId()
+  db.prepare('INSERT INTO goals (id, title, description, project_id) VALUES (?, ?, ?, ?)')
+    .run(id, title, description ?? '', pid ?? null)
 }
 
-export function createWorkItem({ id, title, description, status, assigneeId, goalId, priority, parentTaskId, dependsOn, createdBy }) {
+export function createWorkItem({ id, title, description, status, assigneeId, goalId, priority, parentTaskId, dependsOn, createdBy, projectId }) {
   const now = new Date().toISOString()
+  const pid = projectId !== undefined ? projectId : getActiveProjectId()
   db.prepare(`
-    INSERT INTO work_items (id, title, description, status, assignee_id, goal_id, priority, parent_task_id, depends_on, created_by, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO work_items (id, title, description, status, assignee_id, goal_id, priority, parent_task_id, depends_on, created_by, created_at, updated_at, project_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id, title, description ?? '', status ?? 'todo', assigneeId ?? null, goalId ?? null, priority ?? 'media',
     parentTaskId ?? null,
     dependsOn ? JSON.stringify(dependsOn) : null,
-    createdBy ?? null, now, now
+    createdBy ?? null, now, now, pid ?? null
   )
 }
 
