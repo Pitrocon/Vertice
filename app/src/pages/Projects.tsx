@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Check, FolderKanban, Pencil, Plus, Save, Trash2 } from 'lucide-react'
+import { Check, FolderKanban, FolderOpen, Pencil, Plus, Save, Trash2 } from 'lucide-react'
 import { Modal } from '@/components/Modal'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { useWorkspace } from '@/store/workspace'
+import { canPickFolder, pickFolder } from '@/lib/desktop'
 import type { Project } from '@/types/agent'
 
 type ProjectModal = { kind: 'new' } | { kind: 'edit'; project: Project } | { kind: 'delete'; project: Project } | null
@@ -83,6 +84,12 @@ function ProjectDialog({ project, onClose, onCreate, onSave }: {
   const [saving, setSaving] = useState(false)
   const pathChanged = Boolean(project) && path.trim() !== '' && path.trim() !== project?.path
 
+  // App desktop: seletor nativo de pastas (G8). O core ainda valida a pasta ao salvar.
+  const choosePath = async () => {
+    const chosen = await pickFolder(path.trim() || project?.path)
+    if (chosen) setPath(chosen)
+  }
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
     setSubmitted(true)
@@ -105,7 +112,16 @@ function ProjectDialog({ project, onClose, onCreate, onSave }: {
       <form onSubmit={(event) => void submit(event)} className="agent-form">
         <div className="form-grid">
           <label>Nome<input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex.: Suporte" aria-invalid={submitted && !name.trim()} />{submitted && !name.trim() && <small className="field-error">Informe um nome.</small>}</label>
-          <label>Workspace<input value={path} onChange={(e) => setPath(e.target.value)} placeholder="%USERPROFILE%\vertice-workspaces\suporte" aria-invalid={submitted && !path.trim()} />{submitted && !path.trim() && <small className="field-error">Informe o diretório.</small>}</label>
+          <label>
+            Workspace
+            <span className="input-with-action">
+              <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="%USERPROFILE%\vertice-workspaces\suporte" aria-invalid={submitted && !path.trim()} />
+              {canPickFolder && (
+                <button type="button" className="button button--secondary button--small" onClick={() => void choosePath()}><FolderOpen size={13} /> Escolher pasta…</button>
+              )}
+            </span>
+            {submitted && !path.trim() && <small className="field-error">Informe o diretório.</small>}
+          </label>
         </div>
         {pathChanged && project && (
           <p className="form-note">A pasta não é movida: os arquivos continuam em <code>{project.path}</code>. A pasta nova passa a ser o workspace deste projeto.</p>

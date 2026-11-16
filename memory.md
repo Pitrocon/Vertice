@@ -504,3 +504,9 @@ Revisão de leitura do core/app encontrou, e CONFIRMOU rodando contra o servidor
 - **`app/src/pages/Work.tsx`:** mover (setas) ou soltar (arrastar) em "Em andamento" uma tarefa sem responsável não move mais. Aparece um aviso e abre o diálogo da tarefa com o campo Responsável em foco e o Status já em "Em andamento"; o botão vira "Salvar e iniciar". Ao salvar com responsável, a tarefa passa pelo mesmo caminho do quadro (online: despacho para a sessão real; offline/demonstração: só move).
 - **Mesmo buraco no diálogo de edição:** escolher Status "Em andamento" trocava só o status (`PATCH`), sem despachar e sem exigir responsável. Agora exige responsável e despacha da mesma forma (salva os outros campos com o status anterior e depois inicia). Sem agentes cadastrados, a mensagem pede para criar um agente.
 - **Verificação:** `tsc -b` e `eslint` sem erros. **NÃO verificado:** o fluxo na interface (navegador/Electron); o sandbox não roda o app.
+
+### [16/11/2026] G8 (`7.8`) - Seletor nativo de pastas no diálogo de Projeto (app desktop)
+- **Electron (`installers/electron/main.js`):** `ipcMain.handle('vertice:pick-folder')` abre `dialog.showOpenDialog` (pasta, pode criar nova). Só responde à janela principal do Vértice; `defaultPath` só é usado se existir e não tiver `%VARIAVEL%`. Devolve o caminho ou `null`.
+- **Preload (`preload.cjs`):** `window.vertice.pickFolder(defaultPath?)` via `ipcRenderer.invoke`. Continua sem expor nenhuma API Node.
+- **Frontend:** novo `app/src/lib/desktop.ts` (`canPickFolder`, `pickFolder`); em `Projects.tsx` o campo Workspace ganha o botão "Escolher pasta…" só no app desktop (no navegador nada muda). O caminho escolhido continua passando por `assertSafeProjectPath` no core ao salvar.
+- **Verificação:** `node --check` em `main.js`/`preload.cjs`, `tsc -b` e `eslint .` sem erros. **NÃO verificado:** o diálogo no Electron (o sandbox não roda o app); o instalador não foi gerado de novo.

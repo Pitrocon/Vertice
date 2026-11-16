@@ -4,7 +4,7 @@
 //   2. Apontar o catálogo de runtimes para a pasta de manifestos embarcada.
 //   3. Subir o vertice-core (HTTP + WebSocket na :7845) in-process.
 //   4. Abrir a janela carregando o build do frontend (app/dist).
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { existsSync } from 'node:fs'
@@ -81,6 +81,21 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => mainWindow.show())
   mainWindow.on('closed', () => { mainWindow = null })
 }
+
+// G8: seletor nativo de pastas para o diálogo de Projeto. Só a janela do Vértice pode pedir; o caminho
+// escolhido volta para o formulário e continua passando pela validação de segurança do core
+// (assertSafeProjectPath) ao salvar. Caminhos com %VARIAVEL% não são expandidos aqui: abre no padrão.
+ipcMain.handle('vertice:pick-folder', async (event, options) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return null
+  const requested = typeof options?.defaultPath === 'string' ? options.defaultPath.trim() : ''
+  const defaultPath = requested && requested.length < 1024 && !requested.includes('%') && existsSync(requested) ? requested : undefined
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Escolher pasta do projeto',
+    defaultPath,
+    properties: ['openDirectory', 'createDirectory', 'promptToCreate'],
+  })
+  return result.canceled ? null : result.filePaths[0] ?? null
+})
 
 app.whenReady().then(async () => {
   try {

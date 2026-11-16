@@ -444,10 +444,11 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
   - **Aceite:** alternar entre Projeto A e Projeto B troca agentes, organograma, metas e tarefas no quadro sem misturar contextos.
   - **Handoff:** fazer após `G1` e `G6` para evitar conflito de migração em `db.js`.
 
-- [ ] **G8** (PKG → FRONT) — **Seletor visual nativo de pastas no Electron** *(ver `tasks.md` 7.8)*:
+- [x] **G8** (PKG → FRONT) — **Seletor visual nativo de pastas no Electron** *(ver `tasks.md` 7.8)*:
   - `PKG`: registrar `ipcMain.handle('vertice:pick-folder', ...)` usando `dialog.showOpenDialog({ properties: ['openDirectory'] })` em `installers/electron/main.js` e expor `pickFolder()` via `contextBridge` em `installers/electron/preload.cjs`.
   - `FRONT`: em `app/src/pages/Projects.tsx` (`ProjectDialog`), adicionar botão **"Escolher pasta…"** ao lado do input de `Workspace`.
   - **Aceite:** usuário escolhe a pasta do projeto pelo explorador do Windows sem precisar digitar caminhos com `%USERPROFILE%`.
+  - **Concluído em 16/11/2026:** IPC `vertice:pick-folder` (só a janela principal), `window.vertice.pickFolder` no preload e botão "Escolher pasta…" visível só no app desktop. Verificado por `node --check`/`tsc`/`eslint`; diálogo não testado no Electron.
 
 - [ ] **G9** (ORQ + BACKEND) — **Modo não-interativo / headless estruturado opcional (`B3` / `F1`)** *(ver `tasks.md` 7.9)*:
   - Pesquisar e validar flags oficiais não-interativas de cada CLI (`runtimes/*.json` + `core/src/runtimes.js`) e adicionar modo de execução estruturado em `core/src/orchestrator.js` (captura limpa via stdout/exit-code/JSON como alternativa à heurística de `4,5 s` de `core/src/task-monitor.js`).

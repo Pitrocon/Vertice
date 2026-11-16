@@ -256,6 +256,9 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .quick-message textarea { padding: 7px 8px; resize: vertical; line-height: 1.45; }
 .quick-message .button { align-self: flex-start; }
 .quick-message small { color: var(--text-secondary); font-size: 9px; line-height: 1.45; }
+.input-with-action { display: flex; align-items: stretch; gap: 6px; }
+.input-with-action input { flex: 1; min-width: 0; }
+.input-with-action .button { flex: none; white-space: nowrap; }
 .permission-note { padding: 12px; border: 1px dashed var(--border-strong); display: flex; flex-direction: column; gap: 4px; }
 .permission-note span { color: var(--text-secondary); font-family: var(--font-mono); font-size: 8px; letter-spacing: .1em; }
 .permission-note strong { font-size: 10px; font-weight: 500; }
