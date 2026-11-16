@@ -410,11 +410,12 @@ Trilhas paralelas no início: **A1 (SEG)** e **A2 (BACKEND)** começam juntas; *
   - **Concluído em 16/11/2026:** migração v6, `PATCH /api/connections/:id` e editor de rótulo no Organograma. Testado via HTTP (inclui reinício do core); UI não testada no navegador.
   - **Demo:** conectar `A (right)` → `B (left)`, fechar o Vértice, reabrir e confirmar a aresta nos mesmos pinos.
 
-- [ ] **G2** (ORQ + FRONT) — **Conexões reais no `Inspector`, envio manual entre agentes e desligamento automático do estado `active`** *(ver `tasks.md` 7.2)*:
+- [x] **G2** (ORQ + FRONT) — **Conexões reais no `Inspector`, envio manual entre agentes e desligamento automático do estado `active`** *(ver `tasks.md` 7.2)*:
   - `ORQ` + `BACKEND`: expor `POST /api/agents/:id/message` (`{ targetId, message }`) chamando `sendAgentMessage` (`core/src/orchestrator.js`); resetar `setConnectionActive(source, target, false)` ao fim do turno ou encerramento da sessão de destino.
   - `FRONT`: passar `connections` para `Inspector.tsx` (hoje `Organograma.tsx` não passa e `Inspector` só lê `agent.createdBy`), exibir listas de entrada/saída no card de conexões e permitir enviar uma mensagem rápida para um agente conectado.
   - **Aceite:** dois agentes ligados no Organograma exibem a ligação no `Inspector`, permitem envio direto e a animação laranja da aresta apaga quando a entrega termina.
   - **Handoff:** após `G1`.
+  - **Concluído em 16/11/2026:** `POST /api/agents/:id/message`, turno de mensagem que apaga a linha e libera o destino, card de conexões e mensagem rápida no Inspector. Testado via HTTP e com o monitor; entrega real com CLI e UI não testadas.
 
 - [ ] **G3** (BACKEND → FRONT) — **Progresso ao vivo na instalação de CLIs + status de autenticação / login rápido** *(ver `tasks.md` 7.3)*:
   - `BACKEND`: em `POST /api/runtimes/:id/install` (`core/src/index.js`), usar `spawn` em vez de `execFile` bufferizado para emitir eventos WebSocket (`install-output`) durante o download/instalação, mantendo download portátil do Node sem UAC e `syncUserCliPath()`. Adicionar verificação leve de status de login por runtime (ou comando `authCheck` nos manifestos `runtimes/*.json`).

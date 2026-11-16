@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { Activity, Bot, ChevronRight, CirclePause, CirclePlay, Clock3, Eraser, Network, Pencil, SquareTerminal, Trash2, X } from 'lucide-react'
-import type { Agent, ActivityEvent } from '@/types/agent'
+import { Activity, ArrowLeft, ArrowRight, Bot, ChevronRight, CirclePause, CirclePlay, Clock3, Eraser, Network, Pencil, Send, SquareTerminal, Trash2, X } from 'lucide-react'
+import type { Agent, AgentConnection, ActivityEvent } from '@/types/agent'
 import { statusLabels } from '@/types/agent'
 
 interface InspectorProps {
   agent?: Agent
   agents: Agent[]
+  connections: AgentConnection[]
   events: ActivityEvent[]
   serviceOnline: boolean
   workspacePath?: string
@@ -18,6 +19,7 @@ interface InspectorProps {
   onRemove: () => void
   onSaveMemory: (memory: string) => Promise<boolean>
   onClearMemory: () => Promise<boolean>
+  onSendMessage: (targetId: string, message: string) => Promise<boolean>
   onSelect: (id: string) => void
   onClose: () => void
   mobileOpen: boolean
@@ -32,7 +34,7 @@ const TABS: { id: InspectorTab; label: string }[] = [
   { id: 'activity', label: 'Eventos' },
 ]
 
-export function Inspector({ agent, agents, events, serviceOnline, workspacePath, hasLiveSession, onStartSession, onStopSession, onOpenTerminal, onTogglePause, onEdit, onRemove, onSaveMemory, onClearMemory, onSelect, onClose, mobileOpen }: InspectorProps) {
+export function Inspector({ agent, agents, connections, events, serviceOnline, workspacePath, hasLiveSession, onStartSession, onStopSession, onOpenTerminal, onTogglePause, onEdit, onRemove, onSaveMemory, onClearMemory, onSendMessage, onSelect, onClose, mobileOpen }: InspectorProps) {
   const [tab, setTab] = useState<InspectorTab>('overview')
   const parentAgent = agent?.createdBy ? agents.find((item) => item.id === agent.createdBy) : undefined
 
@@ -68,13 +70,7 @@ export function Inspector({ agent, agents, events, serviceOnline, workspacePath,
                   <div><dt>Workspace</dt><dd>{workspacePath ?? 'workspace do projeto ativo'}</dd></div>
                   <div><dt>Origem</dt><dd>{agent.createdBy ? `Criado por ${parentAgent?.name ?? 'Gerente'}` : 'Agente principal'}</dd></div>
                 </dl>
-                <div className="detail-group">
-                  <div className="section-label">CONEXÕES</div>
-                  <div className="connection-summary">
-                    <Network size={14} />
-                    <span>{agent.kind === 'manager' ? `${agents.filter((item) => item.createdBy === agent.id).length} subagentes coordenados` : parentAgent ? `Vinculado a ${parentAgent.name}` : 'Sem supervisor'}</span>
-                  </div>
-                </div>
+                <ConnectionsPanel key={agent.id} agent={agent} agents={agents} connections={connections} serviceOnline={serviceOnline} onSelect={onSelect} onSendMessage={onSendMessage} />
                 <div className="detail-group permission-note">
                   <span>PERMISSÕES</span>
                   <strong>Autonomia total no workspace</strong>
@@ -124,6 +120,92 @@ export function Inspector({ agent, agents, events, serviceOnline, workspacePath,
         </div>
       )}
     </aside>
+  )
+}
+
+/**
+ * Card "Conexões" (G2): linhas reais do organograma que saem e chegam neste agente, e envio de uma
+ * mensagem rápida para um agente ligado. A mensagem é digitada no terminal real do destino.
+ */
+function ConnectionsPanel({ agent, agents, connections, serviceOnline, onSelect, onSendMessage }: {
+  agent: Agent
+  agents: Agent[]
+  connections: AgentConnection[]
+  serviceOnline: boolean
+  onSelect: (id: string) => void
+  onSendMessage: (targetId: string, message: string) => Promise<boolean>
+}) {
+  const nameOf = (id: string) => agents.find((item) => item.id === id)?.name ?? id
+  const outgoing = connections.filter((item) => item.source === agent.id)
+  const incoming = connections.filter((item) => item.target === agent.id)
+  const linkedIds = [...new Set([...outgoing.map((item) => item.target), ...incoming.map((item) => item.source)])]
+    .filter((id) => agents.some((item) => item.id === id))
+  const [targetId, setTargetId] = useState('')
+  const [message, setMessage] = useState('')
+  const [busy, setBusy] = useState(false)
+  const target = linkedIds.includes(targetId) ? targetId : linkedIds[0] ?? ''
+
+  const send = async () => {
+    if (!target || !message.trim()) return
+    setBusy(true)
+    const ok = await onSendMessage(target, message.trim())
+    setBusy(false)
+    if (ok) setMessage('')
+  }
+
+  const row = (item: AgentConnection, direction: 'out' | 'in') => {
+    const otherId = direction === 'out' ? item.target : item.source
+    return (
+      <li key={`${direction}-${item.id}`} className={item.active ? 'is-active' : ''}>
+        {direction === 'out' ? <ArrowRight size={12} aria-label="envia para" /> : <ArrowLeft size={12} aria-label="recebe de" />}
+        <button type="button" onClick={() => onSelect(otherId)}>{nameOf(otherId)}</button>
+        {item.label && <small>{item.label}</small>}
+        {item.active && <em>em comunicação</em>}
+      </li>
+    )
+  }
+
+  return (
+    <div className="detail-group">
+      <div className="section-label">CONEXÕES</div>
+      {outgoing.length + incoming.length === 0 ? (
+        <div className="connection-summary">
+          <Network size={14} />
+          <span>Sem ligações. Puxe uma linha de um ponto deste agente até outro agente no organograma.</span>
+        </div>
+      ) : (
+        <>
+          {outgoing.length > 0 && (<><span className="connection-list__title">Envia para</span><ul className="connection-list">{outgoing.map((item) => row(item, 'out'))}</ul></>)}
+          {incoming.length > 0 && (<><span className="connection-list__title">Recebe de</span><ul className="connection-list">{incoming.map((item) => row(item, 'in'))}</ul></>)}
+        </>
+      )}
+      {linkedIds.length > 0 && (
+        <div className="quick-message">
+          <label>
+            <span>Mensagem para</span>
+            <select value={target} onChange={(event) => setTargetId(event.target.value)} disabled={busy}>
+              {linkedIds.map((id) => <option key={id} value={id}>{nameOf(id)}</option>)}
+            </select>
+          </label>
+          <textarea
+            value={message}
+            maxLength={2000}
+            rows={3}
+            placeholder={`Escreva o que ${agent.name} deve passar para ${nameOf(target)}`}
+            aria-label="Mensagem rápida"
+            disabled={busy || !serviceOnline}
+            onChange={(event) => setMessage(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send() } }}
+          />
+          <button className="button button--primary button--small" disabled={busy || !serviceOnline || !message.trim()} onClick={() => void send()}>
+            <Send size={13} /> {busy ? 'Entregando…' : 'Enviar'}
+          </button>
+          <small>{serviceOnline
+            ? `Entregue como mensagem de ${agent.name} no terminal real do destino (a sessão abre se precisar). A linha fica laranja até a resposta terminar.`
+            : 'Precisa do serviço local (vertice-core) para entregar.'}</small>
+        </div>
+      )}
+    </div>
   )
 }
 

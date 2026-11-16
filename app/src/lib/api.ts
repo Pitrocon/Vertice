@@ -200,6 +200,11 @@ export const api = {
     return mutate('PATCH', `/api/connections/${encodeURIComponent(id)}`, fields)
   },
 
+  // G2: o core digita a mensagem no terminal real do agente de destino (precisa haver linha entre os dois).
+  async sendAgentMessage(sourceId: string, targetId: string, message: string): Promise<MutationResult> {
+    return mutate('POST', `/api/agents/${encodeURIComponent(sourceId)}/message`, { targetId, message })
+  },
+
   async deleteConnection(id: string): Promise<WorkspaceSnapshot | null> {
     return request<WorkspaceSnapshot>('DELETE', `/api/connections/${encodeURIComponent(id)}`)
   },

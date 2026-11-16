@@ -195,6 +195,7 @@ function OrganogramaView() {
       <Inspector
         agent={selectedAgent}
         agents={agents}
+        connections={connections}
         events={events}
         serviceOnline={workspace.serviceOnline}
         workspacePath={workspace.activeProject?.path}
@@ -207,6 +208,7 @@ function OrganogramaView() {
         onRemove={() => setModal('remove')}
         onSaveMemory={(memory) => (selectedAgent ? workspace.saveAgentMemory(selectedAgent.id, memory) : Promise.resolve(false))}
         onClearMemory={() => (selectedAgent ? workspace.clearAgentMemory(selectedAgent.id) : Promise.resolve(false))}
+        onSendMessage={(targetId, message) => (selectedAgent ? workspace.sendAgentMessage(selectedAgent.id, targetId, message) : Promise.resolve(false))}
         onSelect={(id) => setSelectedId(id)}
         onClose={() => setSelectedId(null)}
         mobileOpen={false}

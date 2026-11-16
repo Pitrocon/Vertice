@@ -239,6 +239,23 @@ kbd { font-family: var(--font-mono); font-size: 9px; font-weight: 450; border: 1
 .detail-list dd { overflow: hidden; text-overflow: ellipsis; margin: 0; font-family: var(--font-mono); font-size: 9px; white-space: nowrap; }
 .connection-summary { display: flex; align-items: flex-start; gap: 8px; margin-top: 9px; color: var(--text-secondary); font-size: 10px; line-height: 1.5; }
 .connection-summary svg { flex: none; margin-top: 1px; color: var(--accent); }
+.connection-list__title { display: block; margin-top: 10px; color: var(--text-secondary); font-family: var(--font-mono); font-size: 8px; letter-spacing: .08em; text-transform: uppercase; }
+.connection-list { list-style: none; margin: 5px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.connection-list li { display: flex; align-items: center; gap: 7px; min-height: 26px; padding: 0 8px; border: 1px solid var(--border-subtle); border-radius: 4px; font-size: 11px; }
+.connection-list li > svg { flex: none; color: var(--accent); }
+.connection-list li.is-active { border-color: oklch(0.72 0.16 58 / .5); }
+.connection-list li.is-active > svg, .connection-list li em { color: var(--accent-warm); }
+.connection-list button { padding: 0; border: 0; background: transparent; color: var(--text-primary); font-size: 11px; text-align: left; }
+.connection-list button:hover { color: var(--accent); }
+.connection-list small { overflow: hidden; color: var(--text-secondary); font-family: var(--font-mono); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.connection-list em { margin-left: auto; font-family: var(--font-mono); font-size: 8px; font-style: normal; }
+.quick-message { margin-top: 12px; display: flex; flex-direction: column; gap: 7px; }
+.quick-message label { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 10px; }
+.quick-message select, .quick-message textarea { border: 1px solid var(--border-strong); border-radius: 4px; background: var(--background); color: var(--text-primary); font: inherit; font-size: 11px; }
+.quick-message select { flex: 1; min-height: 26px; padding: 0 6px; }
+.quick-message textarea { padding: 7px 8px; resize: vertical; line-height: 1.45; }
+.quick-message .button { align-self: flex-start; }
+.quick-message small { color: var(--text-secondary); font-size: 9px; line-height: 1.45; }
 .permission-note { padding: 12px; border: 1px dashed var(--border-strong); display: flex; flex-direction: column; gap: 4px; }
 .permission-note span { color: var(--text-secondary); font-family: var(--font-mono); font-size: 8px; letter-spacing: .1em; }
 .permission-note strong { font-size: 10px; font-weight: 500; }

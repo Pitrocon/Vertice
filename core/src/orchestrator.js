@@ -169,6 +169,7 @@ function trackedBroadcast(event) {
   }
   broadcastFn(event)
   feedTaskMonitor(event)
+  feedMessageTurn(event)
   recordTranscript(event)
   feedInterAgentRouter(event)
 }
@@ -243,8 +244,9 @@ export async function sendAgentMessage(sourceAgentId, targetAgentId, rawMessage,
     const targetAgent = snapshot.agents.find((a) => a.id === targetAgentId)
     if (!sourceAgent || !targetAgent) return { ok: false }
 
-    setConnectionActive(sourceAgent.id, targetAgent.id, true)
+    setLinkActive(sourceAgent.id, targetAgent.id, true)
     syncAllMemoryFiles()
+    broadcastFn({ type: 'workspace-updated', snapshot: getWorkspaceSnapshot() })
 
     const { sessionId, created } = await ensureAgentSession(targetAgent, snapshot)
     const runtimeId = runtimeIdForAgent(targetAgent)
@@ -263,9 +265,14 @@ export async function sendAgentMessage(sourceAgentId, targetAgentId, rawMessage,
 
     if (created) await waitForSessionReady(sessionId)
     markInjectedPrompt(sessionId, payload)
-    if (!writeToSession(sessionId, payload)) return { ok: false }
+    if (!writeToSession(sessionId, payload)) {
+      recentDeliveries.delete(dedupeKey) // nada foi entregue: pode tentar de novo na hora
+      releaseFailedDelivery(sourceAgent.id, targetAgent.id)
+      return { ok: false, error: 'A sessão do agente de destino foi encerrada' }
+    }
     await delay(200)
     writeToSession(sessionId, '\r')
+    startMessageTurn(sessionId, sourceAgent.id, targetAgent.id, runtimeId, payload)
 
     patchAgent(targetAgent.id, { status: 'working', task: `Recebido de ${sourceAgent.name}: ${message.slice(0, 70)}` })
     recordEvent(sourceAgent.id, `Comunicou com ${targetAgent.name} (${reason}): ${message.slice(0, 120)}`, 'delegate')
@@ -273,8 +280,81 @@ export async function sendAgentMessage(sourceAgentId, targetAgentId, rawMessage,
     return { ok: true, sessionId }
   } catch (error) {
     console.error('[orchestrator] falha ao entregar mensagem entre agentes:', error.message)
-    return { ok: false, error: error.message }
+    recentDeliveries.delete(dedupeKey) // nada foi entregue: pode tentar de novo na hora
+    releaseFailedDelivery(sourceAgentId, targetAgentId)
+    return { ok: false, error: error.message, status: error.status }
   }
+}
+
+// --- Fim do turno de uma mensagem entre agentes (G2) ----------------------------
+// Ao entregar uma mensagem, a linha do organograma acende (`active`) e o destino fica "working".
+// O fim da resposta do destino é inferido pela mesma heurística das tarefas (task-monitor.js: fim da
+// sessão, silêncio depois de uma resposta real, volta do prompt do PowerShell). Ao terminar, a linha
+// apaga e o agente volta a "idle" se não tiver tarefa em andamento. Um teto de tempo garante que a
+// linha não fique acesa para sempre se a heurística não disparar.
+const MESSAGE_TURN_MAX_MS = 10 * 60 * 1000
+const messageTurns = new Map() // sessionId -> { monitor, cap, targetId, sources: Set<agentId> }
+
+// A linha pode ter sido desenhada no sentido contrário ao da mensagem; acende/apaga a que existir.
+function setLinkActive(sourceId, targetId, active) {
+  setConnectionActive(sourceId, targetId, active)
+  setConnectionActive(targetId, sourceId, active)
+}
+
+function hasTaskInProgress(agentId, snapshot = getWorkspaceSnapshot()) {
+  return snapshot.workItems.some((w) => w.assigneeId === agentId && w.status === 'doing')
+}
+
+function startMessageTurn(sessionId, sourceId, targetId, runtimeId, instruction) {
+  const previous = messageTurns.get(sessionId)
+  const sources = previous?.sources ?? new Set()
+  if (previous) { previous.monitor.cancel(); clearTimeout(previous.cap) }
+  sources.add(sourceId)
+  const monitor = createTaskMonitor({
+    runtimeId,
+    instruction,
+    idleMs: Number(process.env.VERTICE_IDLE_COMPLETE_MS) || undefined,
+    onComplete: ({ reason }) => finishMessageTurn(sessionId, reason),
+  })
+  const cap = setTimeout(() => finishMessageTurn(sessionId, 'timeout'), MESSAGE_TURN_MAX_MS)
+  if (typeof cap.unref === 'function') cap.unref()
+  messageTurns.set(sessionId, { monitor, cap, targetId, sources })
+}
+
+function finishMessageTurn(sessionId, reason) {
+  const entry = messageTurns.get(sessionId)
+  if (!entry) return
+  messageTurns.delete(sessionId)
+  entry.monitor.cancel()
+  clearTimeout(entry.cap)
+  try {
+    for (const sourceId of entry.sources) setLinkActive(sourceId, entry.targetId, false)
+    const snapshot = getWorkspaceSnapshot()
+    const target = snapshot.agents.find((a) => a.id === entry.targetId)
+    if (target && target.status === 'working' && !hasTaskInProgress(target.id, snapshot)) {
+      patchAgent(target.id, { status: 'idle', task: '' })
+    }
+    if (reason === 'timeout') recordEvent(entry.targetId, 'Resposta à mensagem não detectada em 10 min; conexão apagada', 'system')
+    broadcastFn({ type: 'workspace-updated', snapshot: getWorkspaceSnapshot() })
+  } catch (error) {
+    console.error('[orchestrator] falha ao encerrar o turno da mensagem:', error.message)
+  }
+}
+
+function feedMessageTurn(event) {
+  const entry = event?.sessionId ? messageTurns.get(event.sessionId) : null
+  if (!entry) return
+  if (event.type === 'output') entry.monitor.feed(String(event.data ?? ''))
+  else if (event.type === 'exit') entry.monitor.exit(event.exitCode)
+}
+
+// Entrega falhou antes de chegar ao terminal: apaga a linha, a menos que um turno anterior ainda a use.
+function releaseFailedDelivery(sourceId, targetId) {
+  try {
+    const stillUsed = [...messageTurns.values()].some((t) => t.targetId === targetId && t.sources.has(sourceId))
+    if (!stillUsed) setLinkActive(sourceId, targetId, false)
+    broadcastFn({ type: 'workspace-updated', snapshot: getWorkspaceSnapshot() })
+  } catch { /* banco indisponível: nada a desfazer */ }
 }
 
 const INTER_AGENT_MARKER_RE = /\[(?:PARA|DELEGAR|HANDOFF|ENVIAR)\s*:\s*([^\]]+)\]\s*(.+)/i

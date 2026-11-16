@@ -71,6 +71,7 @@ interface WorkspaceValue {
   updateAgent: (id: string, input: NewAgentInput) => Promise<boolean>
   saveAgentMemory: (id: string, memory: string) => Promise<boolean>
   clearAgentMemory: (id: string) => Promise<boolean>
+  sendAgentMessage: (sourceId: string, targetId: string, message: string) => Promise<boolean>
   updateWorkItem: (id: string, input: WorkItemInput) => Promise<boolean>
   deleteWorkItem: (id: string) => Promise<boolean>
   updateGoal: (id: string, input: { title: string; description: string }) => Promise<boolean>
@@ -752,6 +753,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return true
   }, [agents, serviceOnline, applySnapshot, setAgents, setConnections])
 
+  // G2: mensagem manual de um agente para outro ligado a ele; entrega no terminal real do destino.
+  const sendAgentMessage = useCallback(async (sourceId: string, targetId: string, message: string) => {
+    if (!serviceOnline) { toast.error('Mensagens entre agentes precisam do serviço local, que está offline'); return false }
+    const { snapshot, error } = await api.sendAgentMessage(sourceId, targetId, message)
+    if (!snapshot) { toast.error(error ?? 'Não foi possível entregar a mensagem'); return false }
+    applySnapshot(snapshot)
+    toast.success('Mensagem entregue no terminal do agente')
+    return true
+  }, [serviceOnline, applySnapshot])
+
   const saveAgentMemory = useCallback(async (id: string, memory: string) => {
     if (!serviceOnline) { toast.error('A memória viva fica no serviço local, que está offline'); return false }
     const { snapshot, error } = await api.updateAgentMemory(id, { memory })
@@ -887,7 +898,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     settings, allowedWorkspaces, updatePolicies, dispatchWorkItem, completeWorkItem,
     serviceOnline, realRuntimes, liveSessions, refreshService,
     startAgentSession, stopAgentSession, installCliReal,
-    updateAgent, saveAgentMemory, clearAgentMemory,
+    updateAgent, saveAgentMemory, clearAgentMemory, sendAgentMessage,
     updateWorkItem, deleteWorkItem, updateGoal, deleteGoal, updateProject, deleteProject,
     promptTemplates, savePromptTemplate, deletePromptTemplate,
   }

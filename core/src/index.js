@@ -12,7 +12,7 @@ import { assertAllowedCwd, assertSafeProjectPath, expandEnvVars, WorkspaceError 
 import { checkRequestOrigin, isFileOrigin, isLocalHost, isLocalOrigin, tokenFromRequest } from './security.js'
 import {
   configureOrchestrator, dispatchWorkItem, canDelegate, completeWorkItem, runtimeIdFromName, registerAgentSession, trackedBroadcast,
-  syncMemoryFile, syncAllMemoryFiles, flushTranscripts, forgetAgentTranscript, forgetAllTranscripts, onWorkItemRemoved,
+  syncMemoryFile, syncAllMemoryFiles, flushTranscripts, forgetAgentTranscript, forgetAllTranscripts, onWorkItemRemoved, sendAgentMessage,
 } from './orchestrator.js'
 import {
   listSessions, listEvents, recordEvent,
@@ -416,6 +416,28 @@ app.post('/api/agents/:id/memory', (req, res) => {
   syncMemoryFile(agent.id)
   recordEvent(agent.id, clear === true ? 'Memória viva limpa' : 'Memória viva editada', 'system')
   res.json(broadcastSnapshot())
+})
+
+// Mensagem manual (Inspector): o agente :id fala com um agente LIGADO a ele no organograma (em qualquer
+// sentido). Entrega no terminal real do destino, abrindo a sessão se preciso; a linha acende até a resposta.
+const MAX_AGENT_MESSAGE = 2000
+app.post('/api/agents/:id/message', async (req, res) => {
+  const { targetId, message } = req.body ?? {}
+  const source = getAgent(req.params.id, { transcript: false })
+  if (!source) return res.status(404).json({ error: 'Agente não encontrado' })
+  if (typeof message !== 'string' || !message.trim()) return res.status(400).json({ error: 'Escreva a mensagem' })
+  if (message.length > MAX_AGENT_MESSAGE) return res.status(400).json({ error: `A mensagem pode ter até ${MAX_AGENT_MESSAGE} caracteres` })
+  if (!targetId || targetId === source.id || !getAgent(targetId, { transcript: false })) {
+    return res.status(400).json({ error: 'Agente de destino inválido' })
+  }
+  const linked = getWorkspaceSnapshot().connections.some((c) =>
+    (c.source === source.id && c.target === targetId) || (c.source === targetId && c.target === source.id))
+  if (!linked) return res.status(403).json({ error: 'Os dois agentes precisam estar ligados no organograma' })
+
+  const result = await sendAgentMessage(source.id, targetId, message, { reason: 'envio manual' })
+  if (result.deduplicated) return res.status(409).json({ error: 'A mesma mensagem foi enviada há menos de 15 segundos' })
+  if (!result.ok) return res.status(result.status === 403 ? 403 : 400).json({ error: result.error || 'Não foi possível entregar a mensagem' })
+  res.json(getWorkspaceSnapshot())
 })
 
 // Pontos de conexão de cada agente no organograma (iguais aos ids dos <Handle> do AgentNode).
